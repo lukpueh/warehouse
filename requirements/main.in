@@ -58,6 +58,7 @@ stdlib-list
 structlog
 transaction
 trove-classifiers
+tuf==0.15.0
 typeguard
 webauthn>=1.0.0,<2.0.0
 whitenoise
