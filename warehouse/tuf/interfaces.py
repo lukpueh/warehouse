@@ -20,15 +20,8 @@ class IKeyService(Interface):
         created.
         """
 
-    def pubkeys_for_role(rolename):
-        """
-        Return a list of (TUF-formatted) public keys for the given TUF role.
-        """
-
-    def privkeys_for_role(rolename):
-        """
-        Return a list of (TUF-formatted) private keys for the given TUF role.
-        """
+    def get(rolename, key_type):
+        """Return a key from specific rolename"""
 
 
 class IStorageService(Interface):
@@ -43,26 +36,5 @@ class IStorageService(Interface):
         Return an implementation of `securesystemslib.storage.StorageBackendInterface`.
         """
 
-
-class IRepositoryService(Interface):
-    def create_service(context, request):
-        """
-        Create the service, given the context and request for which it is being
-        created.
-        """
-
-    def load_repository():
-        """
-        Return a TUF Repository object for direct manipulation of the underlying
-        repository.
-
-        NOTE: The Repository object returned from this method cannot be manipulated
-        safely by multiple tasks or threads, especially. It should only be used during
-        TUF initialization or offline maintenance tasks.
-        """
-
-    def add_target(file, backsigned=False):
-        """
-        Given a warehouse.packaging.models.File, add it to the TUF
-        repository.
-        """
+    def get(rolename):
+        """Return a key from specific rolename"""

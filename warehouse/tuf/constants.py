@@ -23,13 +23,6 @@ class Role(enum.Enum):
     BIN_N: str = "bin-n"
 
 
-TOPLEVEL_ROLES = [
-    Role.ROOT.value,
-    Role.SNAPSHOT.value,
-    Role.TARGETS.value,
-    Role.TIMESTAMP.value,
-]
-
 HASH_ALGORITHM = "blake2b"
 
 TUF_REPO_LOCK = "tuf-repo"

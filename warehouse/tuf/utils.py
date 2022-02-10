@@ -10,71 +10,156 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
 import os
 
 from contextlib import contextmanager
 from io import BytesIO
 
-import tuf.formats
-import tuf.repository_lib
-
 from google.cloud.exceptions import GoogleCloudError, NotFound
 from securesystemslib.exceptions import StorageError
+from securesystemslib.interface import generate_and_write_ed25519_keypair
 from securesystemslib.storage import FilesystemBackend, StorageBackendInterface
-from tuf.api import metadata
 
-from warehouse.tuf.constants import BIN_N_COUNT
+from warehouse.config import Environment
+from warehouse.tuf.constants import Role
+from warehouse.tuf.repository import MetadataRepository, TargetsPayload
+
+
+def set_expiration_for_role(config, role_name):
+    # If we're initializing TUF for development purposes, give
+    # every role a long expiration time so that developers don't have to
+    # continually re-initialize it.
+    if config.registry.settings["warehouse.env"] == Environment.development:
+        return datetime.datetime.now().replace(microsecond=0) + datetime.timedelta(
+            seconds=config.registry.settings["tuf.development_metadata_expiry"]
+        )
+    else:
+        return datetime.datetime.now().replace(microsecond=0) + datetime.timedelta(
+            seconds=config.registry.settings[f"tuf.{role_name}.expiry"]
+        )
+
+
+def create_dev_keys(password, filepath) -> None:
+    generate_and_write_ed25519_keypair(password, filepath=filepath)
 
 
 def make_fileinfo(file, custom=None):
     """
-    Given a warehouse.packaging.models.File, create a TUF-compliant
-    "fileinfo" dictionary suitable for addition to a delegated bin.
+    Create a TUF-compliant "fileinfo" dictionary suitable for addition to a
+    delegated bin.
 
     The optional "custom" kwarg can be used to supply additional custom
     metadata (e.g., metadata for indicating backsigning).
     """
-    hashes = {"blake2b": file.blake2_256_digest}
-    fileinfo = tuf.formats.make_targets_fileinfo(file.size, hashes, custom=custom)
+    hashes = {"blake2b-256": file.blake2_256_digest}
+    fileinfo = dict()
+    fileinfo["length"] = file.size
+    fileinfo["hashes"] = hashes
+    if custom:
+        fileinfo["custom"] = custom
 
     return fileinfo
 
 
-def bump_metadata(metadata, delta):
-    """
-    Given a tuf.api.metadata.Signed, bump its version and expiration (with the given
-    timedelta).
-    """
-    metadata.bump_version()
-    metadata.bump_expiration(delta=delta)
+def repository_bump_snapshot(config, storage_service, key_service):
+    # Bumping the Snapshot role involves the following steps:
+    # 1. Initiate Metadata Repository.
+    # 2. Load the Snapshot Role.
+    # 3. Bump Snapshot role (and write to the Storage).
+    # 4. Bump Timestamp role using the new Snapshot Metadata.
 
+    # 1. Metadata Repository.
+    metadata_repository = MetadataRepository(storage_service, key_service)
 
-def find_snapshot(timestamp, storage_backend):
-    """
-    Given a tuf.api.metadata.Timestamp model, return the Metadata container
-    for the consistent snapshot that it references.
-    """
-    snapshot_version = timestamp.meta["snapshot.json"]["version"]
+    # 2. Snapshot role metadata.
+    snapshot_metadata = metadata_repository.load_role(Role.SNAPSHOT.value)
 
-    return metadata.Metadata.from_json_file(
-        f"{snapshot_version}.snapshot.json", storage_backend
+    # 3. Bump Snapshot role metadata.
+    snapshot_metadata = metadata_repository.snapshot_bump_version(
+        snapshot_expires=set_expiration_for_role(config, Role.SNAPSHOT.value),
+        snapshot_metadata=snapshot_metadata,
+        store=True,
+    )
+
+    # 4. Bump Snapshot role etadata using Timestamp metadata.
+    metadata_repository.timestamp_bump_version(
+        snapshot_version=snapshot_metadata.signed.version,
+        timestamp_expires=set_expiration_for_role(config, Role.TIMESTAMP.value),
+        store=True,
     )
 
 
-def find_delegated_bin(filepath, snapshot, storage_backend):
-    """
-    Given a new target filepath and a tuf.api.metadata.Snapshot model,
-    return a tuple of the bin name and tup.api.metadata.Metadata container for
-    the consistent delegated targets bin that the target belongs in.
-    """
+def repository_bump_bins_ns(config, storage_service, key_service):
+    # Bumping all of the delegated bin roles in the TUF repository involves
+    # the following steps:
+    # 1. Metadata Repository.
+    # 2. Load Snapshot role.
+    # 3. Load BIN-S role.
+    # 4. For each delegated hashed bin targets role in the BIN-S, fetch the
+    #    role, bump, write back to the repo and update Snapshot role MetaFile.
+    # 5. Bump BIN-S and write back to repository.
+    # 6. Bump Snapshot and write back to repository.
+    # 7. Bump Timestamp role (using updated Snapshot) and write back to
+    #    repository.
 
-    # TODO: This probably isn't using the right hash function.
-    filepath_hash = tuf.repository_lib.get_target_hash(filepath)
-    bin_name = tuf.repository_lib.find_bin_for_target_hash(filepath_hash, BIN_N_COUNT)
-    bin_version = snapshot.meta[f"{bin_name}.json"]["version"]
+    # 1. Metadata Repository
+    metadata_repository = MetadataRepository(storage_service, key_service)
 
-    return bin_name, metadata.Metadata.from_json_file(
-        f"{bin_version}.{bin_name}.json", storage_backend
+    # 2. Load Snapshot role.
+    snapshot_metadata = metadata_repository.load_role(Role.SNAPSHOT.value)
+
+    # 3 Load BIN-S role.
+    bins_metadata = metadata_repository.load_role(Role.BINS.value)
+
+    # 4. Fore each delegated hashed bin target role, bump and update Snapshot
+    for role in bins_metadata.signed.delegations.roles.keys():
+        role_metadata = metadata_repository.load_role(role)
+        metadata_repository.bump_role_version(
+            rolename=role,
+            role_metadata=role_metadata,
+            role_expires=set_expiration_for_role(config, Role.BINS.value),
+            snapshot_metadata=snapshot_metadata,
+            key_rolename=Role.BIN_N.value,
+            store=True,
+        )
+        snapshot_metadata = metadata_repository.snapshot_update_meta(
+            role, role_metadata.signed.version, snapshot_metadata
+        )
+
+    # 5. Bump BIN-S with updated metadata
+    snapshot_metadata = metadata_repository.bump_role_version(
+        rolename=Role.BINS.value,
+        role_metadata=bins_metadata,
+        role_expires=set_expiration_for_role(config, Role.BINS.value),
+        snapshot_metadata=snapshot_metadata,
+        key_rolename=None,
+        store=True,
+    )
+
+    # 6. Bump Snapshot with updated metadata
+    snapshot_metadata = metadata_repository.snapshot_bump_version(
+        snapshot_expires=set_expiration_for_role(config, Role.SNAPSHOT.value),
+        snapshot_metadata=snapshot_metadata,
+        store=True,
+    )
+
+    # Bump Timestamp with updated Snapshot metadata
+    metadata_repository.timestamp_bump_version(
+        snapshot_expires=snapshot_metadata.signed.version,
+        timestamp_expires=set_expiration_for_role(config, Role.TIMESTAMP.value),
+        store=True,
+    )
+
+
+def repository_add_target(config, fileinfo, path, storage_service, key_service):
+    payload = [TargetsPayload(fileinfo, path)]
+
+    metadata_repository = MetadataRepository(storage_service, key_service)
+    metadata_repository.add_targets(
+        payload=payload,
+        timestamp_expires=set_expiration_for_role(config, Role.TIMESTAMP.value),
+        snapshot_expires=set_expiration_for_role(config, Role.SNAPSHOT.value),
     )
 
 

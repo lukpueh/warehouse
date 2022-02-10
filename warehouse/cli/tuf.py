@@ -10,16 +10,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import datetime
-
 import click
-
-from tuf import repository_tool
 
 from warehouse.cli import warehouse
 from warehouse.config import Environment
 from warehouse.tuf import utils
-from warehouse.tuf.constants import BIN_N_COUNT, TOPLEVEL_ROLES, Role
+from warehouse.tuf.constants import BIN_N_COUNT, Role
+from warehouse.tuf.hash_bins import HashBins
+from warehouse.tuf.repository import (
+    TOP_LEVEL_ROLE_NAMES,
+    MetadataRepository,
+    RolesPayload,
+    TargetsPayload,
+)
+from warehouse.tuf.utils import (
+    repository_bump_bins_ns,
+    repository_bump_snapshot,
+    set_expiration_for_role,
+)
+
+
+def _make_hash_bins(config):
+    if config.registry.settings["warehouse.env"] == Environment.development:
+        number_of_bins = 32
+    else:
+        number_of_bins = BIN_N_COUNT
+
+    return HashBins(number_of_bins)
 
 
 def _make_backsigned_fileinfo_from_file(file):
@@ -31,25 +48,11 @@ def _key_service(config):
     return key_service_class.create_service(None, config)
 
 
-def _repository_service(config):
+def _storage_service(config):
     repo_service_class = config.maybe_dotted(
-        config.registry.settings["tuf.repo_backend"]
+        config.registry.settings["tuf.storage_backend"]
     )
     return repo_service_class.create_service(None, config)
-
-
-def _set_expiration_for_role(config, role_obj, role_name):
-    # If we're initializing TUF for development purposes, give
-    # every role a long expiration time so that developers don't have to
-    # continually re-initialize it.
-    if config.registry.settings["warehouse.env"] == Environment.development:
-        role_obj.expiration = datetime.datetime.now() + datetime.timedelta(
-            seconds=config.registry.settings["tuf.development_metadata_expiry"]
-        )
-    else:
-        role_obj.expiration = datetime.datetime.now() + datetime.timedelta(
-            seconds=config.registry.settings[f"tuf.{role_name}.expiry"]
-        )
 
 
 @warehouse.group()  # pragma: no-branch
@@ -59,7 +62,14 @@ def tuf():
     """
 
 
-@tuf.command()
+@tuf.group()
+def dev():
+    """
+    TUF Development purposes commands
+    """
+
+
+@dev.command()
 @click.pass_obj
 @click.option("--name", "name_", help="The name of the TUF role for this keypair")
 @click.option("--path", "path_", help="The basename of the Ed25519 keypair to generate")
@@ -67,110 +77,164 @@ def keypair(config, name_, path_):
     """
     Generate a new TUF keypair, for development purposes.
     """
-
-    repository_tool.generate_and_write_ed25519_keypair(
-        path_, password=config.registry.settings[f"tuf.{name_}.secret"]
-    )
+    utils.create_dev_keys(config.registry.settings[f"tuf.{name_}.secret"], path_)
 
 
-@tuf.command()
+@dev.command()
 @click.pass_obj
 def new_repo(config):
     """
-    Initialize the TUF repository from scratch, including a brand new root.
+    Initialize new TUF repository from scratch, for development purposes.
     """
-
-    repository = repository_tool.create_new_repository(
-        config.registry.settings["tuf.repo.path"]
-    )
 
     key_service = _key_service(config)
-    for role in TOPLEVEL_ROLES:
-        role_obj = getattr(repository, role)
-        role_obj.threshold = config.registry.settings[f"tuf.{role}.threshold"]
-        _set_expiration_for_role(config, role_obj, role)
+    storage_service = _storage_service(config)
+    metadata_repository = MetadataRepository(storage_service, key_service)
 
-        pubkeys = key_service.pubkeys_for_role(role)
-        privkeys = key_service.privkeys_for_role(role)
-        if len(pubkeys) < role_obj.threshold or len(privkeys) < role_obj.threshold:
-            raise click.ClickException(
-                f"Unable to initialize TUF repo ({role} needs {role_obj.threshold} keys"
-            )
+    if metadata_repository._is_initialized:
+        raise click.ClickException("TUF Metadata Repository already initialized.")
 
-        for pubkey in pubkeys:
-            role_obj.add_verification_key(pubkey)
+    top_roles_payload = dict()
+    for role in TOP_LEVEL_ROLE_NAMES:
+        top_roles_payload[role] = RolesPayload(
+            expiration=set_expiration_for_role(config, role),
+            threshold=config.registry.settings[f"tuf.{role}.threshold"],
+            keys=[key_service.get(role, "private")],
+        )
 
-        for privkey in privkeys:
-            role_obj.load_signing_key(privkey)
+    try:
+        metadata_repository.initialize(top_roles_payload, True)
+    except (ValueError, FileExistsError) as err:
+        raise click.ClickException(str(err))
 
-    repository.mark_dirty(TOPLEVEL_ROLES)
-    repository.writeall(
-        consistent_snapshot=True,
+    if metadata_repository.is_initialized is False:
+        raise click.ClickException("TUF Metadata Repository failed to initialized.")
+
+
+@dev.command()
+@click.pass_obj
+def add_targets(config):
+    """
+    Collect the "paths" for every PyPI package. These are packages already in
+    existence, so we'll add some additional data to their targets to
+    indicate that we're back-signing them.
+    """
+    from warehouse.db import Session
+    from warehouse.packaging.models import File
+
+    key_service = _key_service(config)
+    storage_service = _storage_service(config)
+    metadata_repository = MetadataRepository(storage_service, key_service)
+    hash_bins = _make_hash_bins(config)
+
+    db = Session(bind=config.registry["sqlalchemy.engine"])
+
+    payload = dict()
+    for file in db.query(File).all():
+        fileinfo = _make_backsigned_fileinfo_from_file(file)
+        delegated_role_bin_name = hash_bins.get_delegate(file.path)
+        target_file = TargetsPayload(fileinfo, file.path)
+        if payload.get(delegated_role_bin_name) is None:
+            payload[delegated_role_bin_name] = list()
+
+        payload[delegated_role_bin_name].append(target_file)
+
+    metadata_repository.add_targets(
+        payload,
+        set_expiration_for_role(config, Role.TIMESTAMP.value),
+        set_expiration_for_role(config, Role.SNAPSHOT.value),
     )
 
 
-@tuf.command()
-@click.pass_obj
-def build_targets(config):
+@tuf.group()
+def admin():
     """
+    TUF Administrative commands
+    """
+
+
+@admin.command()
+@click.pass_obj
+def bump_snapshot(config):
+    """
+    Bump Snapshot metadata
+    """
+    storage_service = _storage_service(config)
+    key_service = _key_service(config)
+
+    repository_bump_snapshot(config, storage_service, key_service)
+    click.echo("Snapshot bump finished.")
+
+
+@admin.command()
+@click.pass_obj
+def bump_bin_ns(config):
+    """
+    Bump BIN-S roles
+    """
+    storage_service = _storage_service(config)
+    key_service = _key_service(config)
+
+    repository_bump_bins_ns(config, storage_service, key_service)
+    click.echo("Hash-bins BIN-S Roles bump finished.")
+
+
+@admin.command()
+@click.pass_obj
+def delegate_targets_roles(config):
+    """
+    Create delegated targets roles (BINS and BIN-N).
+
     Given an initialized (but empty) TUF repository, create the delegated
     targets role (bins) and its hashed bin delegations (each bin-n).
     """
 
-    repo_service = _repository_service(config)
-    repository = repo_service.load_repository()
-
-    # Load signing keys. We do this upfront for the top-level roles.
     key_service = _key_service(config)
-    for role in ["snapshot", "targets", "timestamp"]:
-        role_obj = getattr(repository, role)
+    storage_service = _storage_service(config)
+    metadata_repository = MetadataRepository(storage_service, key_service)
+    hash_bins = _make_hash_bins(config)
 
-        [role_obj.load_signing_key(k) for k in key_service.privkeys_for_role(role)]
-
-    # NOTE: TUF normally does delegations by path patterns (i.e., globs), but PyPI
-    # doesn't store its uploads on the same logical host as the TUF repository.
-    # The last parameter to `delegate` is a special sentinel for this.
-    repository.targets.delegate(
-        Role.BINS.value, key_service.pubkeys_for_role(Role.BINS.value), ["*"]
-    )
-    bins_role = repository.targets(Role.BINS.value)
-    _set_expiration_for_role(config, bins_role, Role.BINS.value)
-
-    for privkey in key_service.privkeys_for_role(Role.BINS.value):
-        bins_role.load_signing_key(privkey)
-
-    bins_role.delegate_hashed_bins(
-        [],
-        key_service.pubkeys_for_role(Role.BIN_N.value),
-        BIN_N_COUNT,
+    # Delegate first targets -> BINS
+    delegate_roles_payload = dict()
+    delegate_roles_payload["targets"] = list()
+    delegate_roles_payload["targets"].append(
+        RolesPayload(
+            expiration=set_expiration_for_role(config, Role.BINS.value),
+            threshold=config.registry.settings[f"tuf.{Role.BINS.value}.threshold"],
+            keys=[key_service.get(Role.BINS.value, "private")],
+            delegation_role=Role.BINS.value,
+            paths=["*/*/*/*"],
+        )
     )
 
-    dirty_roles = ["snapshot", "targets", "timestamp", Role.BINS.value]
-    for bin_n_role in bins_role.delegations:
-        _set_expiration_for_role(config, bin_n_role, Role.BIN_N.value)
-        dirty_roles.append(bin_n_role.rolename)
+    try:
+        metadata_repository.delegate_targets_roles(
+            delegate_roles_payload,
+            set_expiration_for_role(config, Role.TIMESTAMP.value),
+            set_expiration_for_role(config, Role.SNAPSHOT.value),
+        )
+    except FileExistsError as err:
+        raise click.ClickException(str(err))
 
-    for privkey in key_service.privkeys_for_role(Role.BIN_N.value):
-        for bin_n_role in bins_role.delegations:
-            bin_n_role.load_signing_key(privkey)
-
-    # Collect the "paths" for every PyPI package. These are packages already in
-    # existence, so we'll add some additional data to their targets to
-    # indicate that we're back-signing them.
-    from warehouse.db import Session
-    from warehouse.packaging.models import File
-
-    db = Session(bind=config.registry["sqlalchemy.engine"])
-    for file in db.query(File).all():
-        fileinfo = _make_backsigned_fileinfo_from_file(file)
-        bins_role.add_target_to_bin(
-            file.path,
-            number_of_bins=BIN_N_COUNT,
-            fileinfo=fileinfo,
+    # Delegates all BINS -> BIN_N (Hash bin prefixes)
+    delegate_roles_payload = dict()
+    delegate_roles_payload[Role.BINS.value] = list()
+    for bin_n_name, bin_n_hash_prefixes in hash_bins.generate():
+        delegate_roles_payload[Role.BINS.value].append(
+            RolesPayload(
+                expiration=set_expiration_for_role(config, Role.BIN_N.value),
+                threshold=config.registry.settings[f"tuf.{Role.BIN_N.value}.threshold"],
+                keys=[key_service.get(Role.BIN_N.value, "private")],
+                delegation_role=bin_n_name,
+                path_hash_prefixes=bin_n_hash_prefixes,
+            )
         )
 
-    repository.mark_dirty(dirty_roles)
-    repository.writeall(
-        consistent_snapshot=True,
-        use_existing_fileinfo=True,
-    )
+    try:
+        metadata_repository.delegate_targets_roles(
+            delegate_roles_payload,
+            set_expiration_for_role(config, Role.TIMESTAMP.value),
+            set_expiration_for_role(config, Role.SNAPSHOT.value),
+        )
+    except FileExistsError as err:
+        raise click.ClickException(str(err))

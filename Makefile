@@ -1,6 +1,5 @@
 DB := example
 IPYTHON := no
-LOCALES := $(shell .state/env/bin/python -c "from warehouse.i18n import KNOWN_LOCALES; print(' '.join(set(KNOWN_LOCALES)-{'en'}))")
 WAREHOUSE_CLI := docker-compose run --rm web python -m warehouse
 
 # set environment variable WAREHOUSE_IPYTHON_SHELL=1 if IPython
@@ -80,14 +79,15 @@ initdb:
 	docker-compose run web python -m warehouse sponsors populate-db
 
 inittuf:
-	$(WAREHOUSE_CLI) tuf keypair --name root --path /opt/warehouse/src/dev/tuf.root
-	$(WAREHOUSE_CLI) tuf keypair --name snapshot --path /opt/warehouse/src/dev/tuf.snapshot
-	$(WAREHOUSE_CLI) tuf keypair --name targets --path /opt/warehouse/src/dev/tuf.targets
-	$(WAREHOUSE_CLI) tuf keypair --name timestamp --path /opt/warehouse/src/dev/tuf.timestamp
-	$(WAREHOUSE_CLI) tuf keypair --name bins --path /opt/warehouse/src/dev/tuf.bins
-	$(WAREHOUSE_CLI) tuf keypair --name bin-n --path /opt/warehouse/src/dev/tuf.bin-n
-	$(WAREHOUSE_CLI) tuf new-repo
-	$(WAREHOUSE_CLI) tuf build-targets
+	$(WAREHOUSE_CLI) tuf dev keypair --name root --path /opt/warehouse/src/dev/tufkeys/root
+	$(WAREHOUSE_CLI) tuf dev keypair --name snapshot --path /opt/warehouse/src/dev/tufkeys/snapshot
+	$(WAREHOUSE_CLI) tuf dev keypair --name targets --path /opt/warehouse/src/dev/tufkeys/targets
+	$(WAREHOUSE_CLI) tuf dev keypair --name timestamp --path /opt/warehouse/src/dev/tufkeys/timestamp
+	$(WAREHOUSE_CLI) tuf dev keypair --name bins --path /opt/warehouse/src/dev/tufkeys/bins
+	$(WAREHOUSE_CLI) tuf dev keypair --name bin-n --path /opt/warehouse/src/dev/tufkeys/bin-n
+	$(WAREHOUSE_CLI) tuf dev new-repo
+	$(WAREHOUSE_CLI) tuf admin delegate-targets-roles
+	$(WAREHOUSE_CLI) tuf dev add-targets
 
 reindex:
 	docker-compose run --rm web python -m warehouse search reindex
@@ -97,6 +97,7 @@ shell:
 
 clean:
 	rm -rf dev/*.sql
+	rm -rf dev/tufkeys
 
 purge: stop clean
 	rm -rf .state

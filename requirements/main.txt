@@ -1053,6 +1053,7 @@ requests==2.27.1 \
     #   google-cloud-storage
     #   premailer
     #   requests-aws4auth
+    #   tuf
 requests-aws4auth==1.1.1 \
     --hash=sha256:c0883346ce30b5018903a67da88df72f73ff06e1a320845bba9cd85e811ba0ba \
     --hash=sha256:dfd9f930ffde48a756b72b55698a8522875ea6358dcffbcc44a66700ace31783
@@ -1069,6 +1070,12 @@ s3transfer==0.5.1 \
     --hash=sha256:25c140f5c66aa79e1ac60be50dcd45ddc59e83895f062a3aab263b870102911f \
     --hash=sha256:69d264d3e760e569b78aaa0f22c97e955891cd22e32b10c51f784eeda4d9d10a
     # via boto3
+securesystemslib==0.22.0 \
+    --hash=sha256:2f58ca1ee30fde5401300fe3b3841adcf7b4369674247fa63b258e07e1f52fd2 \
+    --hash=sha256:c3fc41ac32fe8bc9744b89e6ce2ebca45f4417ca737beb766a41c6cb21935662
+    # via
+    #   -r requirements/main.in
+    #   tuf
 sentry-sdk==1.5.5 \
     --hash=sha256:3817274fba2498c8ebf6b896ee98ac916c5598706340573268c07bf2bb30d831 \
     --hash=sha256:98fd155fa5d5fec1dbabed32a1a4ae2705f1edaa5dae4e7f7b62a384ba30e759
@@ -1172,6 +1179,10 @@ translationstring==1.4 \
 trove-classifiers==2022.2.16 \
     --hash=sha256:d985eeadb24c8a40d1fa121317466e2ae73ae8ad9abc8cab69371212c40b085f \
     --hash=sha256:dcf20b1de0f56308dd107caaa5175e72a950bbb12c95deedac6a7cd429ecd694
+    # via -r requirements/main.in
+tuf==1.0.0 \
+    --hash=sha256:6d967f992d494678b684a6f5f03d948130e2d9956310c7af74fa2f0296e8ec4d \
+    --hash=sha256:ec74150954d56e206fa72f3b0234ea802649370e528dea5a83e507bd408fda82
     # via -r requirements/main.in
 typeguard==2.13.3 \
     --hash=sha256:00edaa8da3a133674796cf5ea87d9f4b4c367d77476e185e80251cc13dfbb8c4 \
