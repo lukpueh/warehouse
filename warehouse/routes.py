@@ -17,7 +17,7 @@ def includeme(config):
     # Forklift is properly split out into it's own project.
     warehouse = config.get_settings().get("warehouse.domain")
     files_url = config.get_settings()["files.url"]
-
+    metadata_url = config.get_settings()["tuf.url"]
     # Simple Route for health checks.
     config.add_route("health", "/_health/")
 
@@ -372,6 +372,7 @@ def includeme(config):
         domain=warehouse,
     )
     config.add_route("packaging.file", files_url)
+    config.add_route("tuf.metadata", metadata_url)
 
     # SES Webhooks
     config.add_route("ses.hook", "/_/ses-hook/", domain=warehouse)
@@ -489,6 +490,7 @@ def includeme(config):
     )
     config.add_redirect("/pypi/", "/", domain=warehouse)
     config.add_redirect("/packages/{path:.*}", files_url, domain=warehouse)
+    config.add_redirect("/metadata/{path:.*}", metadata_url, domain=warehouse)
 
     # Legacy Action Redirects
     config.add_pypi_action_redirect("rss", "/rss/updates.xml", domain=warehouse)

@@ -243,8 +243,9 @@ def app_config(database):
         "docs.backend": "warehouse.packaging.services.LocalDocsStorage",
         "sponsorlogos.backend": "warehouse.admin.services.LocalSponsorLogoStorage",
         "mail.backend": "warehouse.email.services.SMTPEmailSender",
+        "tuf.storage_backend": "warehouse.tuf.services.LocalStorageService",
         "tuf.key_backend": "warehouse.tuf.services.LocalKeyService",
-        "tuf.repo_backend": "warehouse.tuf.services.LocalRepositoryService",
+        "tuf.repository_backend": "warehouse.tuf.services.RepositoryService",
         "malware_check.backend": (
             "warehouse.malware.services.PrinterMalwareCheckService"
         ),
