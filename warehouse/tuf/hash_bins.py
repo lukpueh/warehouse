@@ -21,6 +21,7 @@ class HashBins:
 
     This code is inspired on python-tuf repo examples for hash bins
     """
+
     def __init__(self, number_of_bins: int) -> None:
         """
         Hash Bins

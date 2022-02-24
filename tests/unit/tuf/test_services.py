@@ -34,7 +34,7 @@ class TestLocalLocalKeyService:
             "keyid": "2de4eb9afe9fb7307f1dd0869a7aec2235d3418bd63f4214d3ba7d23b516f23e",
             "keyid_hash_algorithms": ["sha256", "sha512"],
         }
-        db_request.registry.settings['tuf.root.secret'] = 'tuf.root.secret'
+        db_request.registry.settings["tuf.root.secret"] = "tuf.root.secret"
         monkeypatch.setattr(
             "warehouse.tuf.services.import_ed25519_privatekey_from_file",
             lambda *a, **kw: expected_priv_key_dict,
@@ -42,4 +42,4 @@ class TestLocalLocalKeyService:
 
         root_keyid = service.get("root", "private")
 
-        assert root_keyid == expected_priv_key_dict
+        assert root_keyid == [expected_priv_key_dict]

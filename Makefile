@@ -81,7 +81,8 @@ initdb:
 inittuf:
 	$(WAREHOUSE_CLI) tuf dev keypair --name root --path /opt/warehouse/src/dev/tufkeys/root
 	$(WAREHOUSE_CLI) tuf dev keypair --name snapshot --path /opt/warehouse/src/dev/tufkeys/snapshot
-	$(WAREHOUSE_CLI) tuf dev keypair --name targets --path /opt/warehouse/src/dev/tufkeys/targets
+	$(WAREHOUSE_CLI) tuf dev keypair --name targets --path /opt/warehouse/src/dev/tufkeys/targets1
+	$(WAREHOUSE_CLI) tuf dev keypair --name targets --path /opt/warehouse/src/dev/tufkeys/targets2
 	$(WAREHOUSE_CLI) tuf dev keypair --name timestamp --path /opt/warehouse/src/dev/tufkeys/timestamp
 	$(WAREHOUSE_CLI) tuf dev keypair --name bins --path /opt/warehouse/src/dev/tufkeys/bins
 	$(WAREHOUSE_CLI) tuf dev keypair --name bin-n --path /opt/warehouse/src/dev/tufkeys/bin-n

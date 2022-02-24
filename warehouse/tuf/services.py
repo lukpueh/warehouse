@@ -61,17 +61,23 @@ class LocalKeyService:
 
         """
         if key_type == "private":
-            privkey_path = os.path.join(self._key_path, f"{rolename}")
-            key_sslib = import_ed25519_privatekey_from_file(
-                privkey_path, self._request.registry.settings[f"tuf.{rolename}.secret"]
-            )
+            privkey_path = os.path.join(self._key_path, f"{rolename}*")
+            role_keys = glob.glob(privkey_path)
+            keys_sslib = [
+                import_ed25519_privatekey_from_file(
+                    key, self._request.registry.settings[f"tuf.{rolename}.secret"]
+                )
+                for key in role_keys
+                if "pub" not in key
+            ]
         elif key_type == "public":
-            pubkey_path = os.path.join(self._key_path, f"{rolename}.pub")
-            key_sslib = import_ed25519_publickey_from_file(pubkey_path)
+            pubkey_path = os.path.join(self._key_path, f"{rolename}*.pub")
+            role_keys = glob.glob(pubkey_path)
+            keys_sslib = [import_ed25519_privatekey_from_file(key) for key in role_keys]
         else:
             raise ValueError(f"invalid key_type '{key_type}'")
 
-        return key_sslib
+        return keys_sslib
 
 
 @implementer(IStorageService)

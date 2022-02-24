@@ -25,7 +25,7 @@ def includeme(config):
             "tuf.root.expiry": 31536000,
             "tuf.snapshot.threshold": 1,
             "tuf.snapshot.expiry": 86400,
-            "tuf.targets.threshold": 1,
+            "tuf.targets.threshold": 2,
             "tuf.targets.expiry": 31536000,
             "tuf.timestamp.threshold": 1,
             "tuf.timestamp.expiry": 86400,
@@ -43,9 +43,7 @@ def includeme(config):
         }
     )
 
-    key_service_class = config.maybe_dotted(
-        config.registry.settings["tuf.key_backend"]
-    )
+    key_service_class = config.maybe_dotted(config.registry.settings["tuf.key_backend"])
     config.register_service_factory(key_service_class.create_service, IKeyService)
 
     storage_service_class = config.maybe_dotted(

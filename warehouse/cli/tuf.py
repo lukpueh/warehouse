@@ -99,7 +99,7 @@ def new_repo(config):
         top_roles_payload[role] = RolesPayload(
             expiration=set_expiration_for_role(config, role),
             threshold=config.registry.settings[f"tuf.{role}.threshold"],
-            keys=[key_service.get(role, "private")],
+            keys=key_service.get(role, "private"),
         )
 
     try:
@@ -201,7 +201,7 @@ def delegate_targets_roles(config):
         RolesPayload(
             expiration=set_expiration_for_role(config, Role.BINS.value),
             threshold=config.registry.settings[f"tuf.{Role.BINS.value}.threshold"],
-            keys=[key_service.get(Role.BINS.value, "private")],
+            keys=key_service.get(Role.BINS.value, "private"),
             delegation_role=Role.BINS.value,
             paths=["*/*/*/*"],
         )
@@ -224,7 +224,7 @@ def delegate_targets_roles(config):
             RolesPayload(
                 expiration=set_expiration_for_role(config, Role.BIN_N.value),
                 threshold=config.registry.settings[f"tuf.{Role.BIN_N.value}.threshold"],
-                keys=[key_service.get(Role.BIN_N.value, "private")],
+                keys=key_service.get(Role.BIN_N.value, "private"),
                 delegation_role=bin_n_name,
                 path_hash_prefixes=bin_n_hash_prefixes,
             )

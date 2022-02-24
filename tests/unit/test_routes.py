@@ -442,10 +442,10 @@ def test_routes(warehouse):
             domain=warehouse,
         ),
         pretend.call(
-            '/metadata/{path:.*}',
-            'https://files.example.com/metadata/{path}',
+            "/metadata/{path:.*}",
+            "https://files.example.com/metadata/{path}",
             domain=warehouse,
-        )
+        ),
     ]
 
     assert config.add_pypi_action_route.calls == [

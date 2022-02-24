@@ -83,7 +83,7 @@ class MetadataRepository:
         delegate_role_parameters: List[RolesPayload],
     ) -> Metadata[Snapshot]:
         """
-        Creates delegated targets roles based on delegator metadata and a 
+        Creates delegated targets roles based on delegator metadata and a
         list of roles parameters (``RolesPayload``).
 
         1. Creates the DelegatedRole Object
@@ -109,7 +109,7 @@ class MetadataRepository:
                     raise FileExistsError(f"Role {rolename} already exists.")
             except StorageError:
                 pass
-            
+
             delegated_role = DelegatedRole(
                 name=rolename,
                 keyids=[key["keyid"] for key in role_parameter.keys],
@@ -134,7 +134,7 @@ class MetadataRepository:
                 delegator_metadata.signed.add_key(
                     rolename, Key.from_securesystemslib_key(key)
                 )
-                role_metadata.sign(SSlibSigner(key))
+                role_metadata.sign(SSlibSigner(key), append=True)
 
             self._store(rolename, role_metadata)
             self.snapshot_update_meta(rolename, role_metadata.signed.version)
@@ -257,13 +257,16 @@ class MetadataRepository:
                     f"Role {role} has missing Key(s) "
                     f"to match to defined threshold {payload[role].threshold}."
                 )
+
             for key in payload[role].keys:
                 root.add_key(role, Key.from_securesystemslib_key(key))
-                signers[role] = {key["keyid"]: SSlibSigner(key)}
+
+            signers[role] = {
+                key["keyid"]: SSlibSigner(key) for key in payload[role].keys
+            }
 
         root_metadata = Metadata(root, {})
         top_level_roles_metadata[Root.type] = root_metadata
-
         for role in signers:
             for signer in signers[role].values():
                 top_level_roles_metadata[role].sign(signer, append=True)
@@ -358,7 +361,9 @@ class MetadataRepository:
             key_rolename = rolename
         role_metadata.signed.expires = role_expires
         role_metadata.signed.version += 1
-        role_metadata.sign(SSlibSigner(self.key_backend.get(key_rolename, "private")))
+        key_rolename_keys = self.key_backend.get(key_rolename, "private")
+        for key in key_rolename_keys:
+            role_metadata.sign(SSlibSigner(key), append=True)
 
         if store:
             self._store(rolename, role_metadata)
@@ -390,9 +395,9 @@ class MetadataRepository:
         timestamp_metadata.signed.version += 1
         timestamp_metadata.signed.expires = timestamp_expires
         timestamp_metadata.signed.snapshot_meta = MetaFile(version=snapshot_version)
-        timestamp_metadata.sign(
-            SSlibSigner(self.key_backend.get(Timestamp.type, "private"))
-        )
+        timestamp_keys = self.key_backend.get(Timestamp.type, "private")
+        for key in timestamp_keys:
+            timestamp_metadata.sign(SSlibSigner(key), append=True)
 
         if store:
             self._store(Timestamp.type, timestamp_metadata)
@@ -422,9 +427,9 @@ class MetadataRepository:
 
         snapshot_metadata.signed.version += 1
         snapshot_metadata.signed.expires = snapshot_expires
-        snapshot_metadata.sign(
-            SSlibSigner(self.key_backend.get(Snapshot.type, "private"))
-        )
+        snapshot_keys = self.key_backend.get(Snapshot.type, "private")
+        for key in snapshot_keys:
+            snapshot_metadata.sign(SSlibSigner(key), append=True)
 
         if store is True:
             self._store(Snapshot.type, snapshot_metadata)
@@ -483,9 +488,10 @@ class MetadataRepository:
                 role_metadata.signed.targets[target.path] = target_file
 
             role_metadata.signed.version += 1
-            role_metadata.sign(
-                SSlibSigner(self.key_backend.get(RoleWarehouse.BIN_N.value, "private"))
-            )
+            role_keys = self.key_backend.get(RoleWarehouse.BIN_N.value, "private")
+            for key in role_keys:
+                role_metadata.sign(SSlibSigner(key), append=True)
+
             self._store(rolename, role_metadata)
             snapshot_metadata = self.bump_role_version(
                 rolename=rolename,
