@@ -13,12 +13,7 @@ import redis
 
 from warehouse.tasks import task
 from warehouse.tuf.constants import TUF_REPO_LOCK
-from warehouse.tuf.interfaces import IKeyService, IStorageService
-from warehouse.tuf.utils import (
-    repository_add_target,
-    repository_bump_bins_ns,
-    repository_bump_snapshot,
-)
+from warehouse.tuf.interfaces import IRepositoryService
 
 
 @task(bind=True, ignore_result=True, acks_late=True)
@@ -32,10 +27,8 @@ def bump_snapshot(task, request):
     r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
 
     with r.lock(TUF_REPO_LOCK):
-        storage_service = request.find_service(IStorageService)
-        key_service = request.find_service(IKeyService)
-
-        repository_bump_snapshot(request, storage_service, key_service)
+        repository_service = request.find_service(IRepositoryService)
+        repository_service.bump_snapshot()
 
 
 @task(bind=True, ignore_result=True, acks_late=True)
@@ -43,18 +36,14 @@ def bump_bin_ns(task, request):
     r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
 
     with r.lock(TUF_REPO_LOCK):
-        storage_service = request.find_service(IStorageService)
-        key_service = request.find_service(IKeyService)
-
-        repository_bump_bins_ns(request, storage_service, key_service)
+        repository_service = request.find_service(IRepositoryService)
+        repository_service.bump_bins_ns()
 
 
 @task(bind=True, ignore_result=True, acks_late=True)
-def add_target(task, request, filepath, fileinfo):
+def add_target(task, request, filepath, fileinfo, rolename):
     r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
 
     with r.lock(TUF_REPO_LOCK):
-        storage_service = request.find_service(IStorageService)
-        key_service = request.find_service(IKeyService)
-
-        repository_add_target(request, fileinfo, filepath, storage_service, key_service)
+        repository_service = request.find_service(IRepositoryService)
+        repository_service.add_target(filepath, fileinfo, rolename)

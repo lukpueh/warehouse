@@ -52,6 +52,7 @@ TWOFACTORMANDATE_ENABLED=true
 
 TUF_KEY_BACKEND=warehouse.tuf.services.LocalKeyService key.path=/opt/warehouse/src/dev/tufkeys
 TUF_STORAGE_BACKEND=warehouse.tuf.services.LocalStorageService repo.path=/var/opt/warehouse/tuf_metadata/ url=http://localhost:9001/metadata/{path}
+TUF_REPOSITORY_BACKEND=warehouse.tuf.services.LocalRepositoryService
 TUF_ROOT_SECRET="an insecure private key password"
 TUF_SNAPSHOT_SECRET="an insecure private key password"
 TUF_TARGETS_SECRET="an insecure private key password"

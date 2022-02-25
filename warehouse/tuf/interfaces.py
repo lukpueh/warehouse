@@ -38,3 +38,16 @@ class IStorageService(Interface):
 
     def get(rolename):
         """Return a key from specific rolename"""
+
+
+class IRepositoryService(Interface):
+    def create_service(context, request):
+        """
+        Create the service, given the context and request for which it is being
+        created.
+        """
+
+    def bump_snapshot():
+        """
+        Bump the Snapshot Metadata Role
+        """

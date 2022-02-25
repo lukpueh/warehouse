@@ -12,7 +12,7 @@
 
 from celery.schedules import crontab
 
-from warehouse.tuf.interfaces import IKeyService, IStorageService
+from warehouse.tuf.interfaces import IKeyService, IRepositoryService, IStorageService
 from warehouse.tuf.repository import SPEC_VERSION
 from warehouse.tuf.tasks import bump_bin_ns, bump_snapshot
 
@@ -51,6 +51,13 @@ def includeme(config):
     )
     config.register_service_factory(
         storage_service_class.create_service, IStorageService
+    )
+
+    repository_service_class = config.maybe_dotted(
+        config.registry.settings["tuf.repository_backend"]
+    )
+    config.register_service_factory(
+        repository_service_class.create_service, IRepositoryService
     )
 
     # Per PEP 458: The snapshot and timestamp metadata expire every 24 hours.

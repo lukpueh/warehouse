@@ -145,10 +145,6 @@ The idea is to start implementing small PRs to evaluate and progress.
   - The ``IStorageService`` was used in the 
   ``warehouse.tuf.repository.MetadataRepository`` as backend storage.
 
-  - Should the ``warehouse.utils.repository_*`` be implemented as a 
-  ``RepositoryService``?
-  I didn't implement it for the simple reason that it does not need to support
-  different implementations such as SaaS.
 
   ```mermaid
     classDiagram 
@@ -170,16 +166,14 @@ The idea is to start implementing small PRs to evaluate and progress.
         zope.interface.Interface
         IKeyService(Interface)
         IStorageService(Interface)
+        IRepositoryService(Interface)
       }
       class `tuf.services` {
         LocalKeyService(IKeyService)
         LocalStorageService(IStorageService)
-        ....()
+        LocalRepositoryService(IRepositoryService)
       }
       class `tuf.utils` {
-        repository_bump_snapshot()
-        repository_bump_bins_ns()
-        repository_add_target()
       }
       class `tuf.tasks` {
         bump_snapshot()
@@ -196,12 +190,15 @@ The idea is to start implementing small PRs to evaluate and progress.
           admin bump-bin-ns
       }
 
-      `tuf.utils` --* MetadataRepository
-      `tuf.utils` --* `tuf.services`
+
+      `tuf.utils` -- `tuf.services`
       `tuf.services` <|-- `tuf.interfaces`
-      `tuf.tasks` --* `tuf.utils`
-      `cli.tuf` --* `tuf.utils`
+      `tuf.services` --* MetadataRepository
+      `tuf.tasks` -- `tuf.services`
+      `cli.tuf` -- `tuf.services`
+      `cli.tuf` -- MetadataRepository
       warehouse -- `cli.tuf`
+      warehouse -- `tuf.tasks`
   ```
 
 - Implemented Services/Interfaces for Storage and Storage Keys

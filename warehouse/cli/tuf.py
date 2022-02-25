@@ -23,11 +23,12 @@ from warehouse.tuf.repository import (
     RolesPayload,
     TargetsPayload,
 )
-from warehouse.tuf.utils import (
-    repository_bump_bins_ns,
-    repository_bump_snapshot,
-    set_expiration_for_role,
+from warehouse.tuf.tasks import (
+    add_target as _add_target,
+    bump_bin_ns as _bump_bin_ns,
+    bump_snapshot as _bump_snapshot,
 )
+from warehouse.tuf.utils import set_expiration_for_role
 
 
 def _make_hash_bins(config):
@@ -49,10 +50,10 @@ def _key_service(config):
 
 
 def _storage_service(config):
-    repo_service_class = config.maybe_dotted(
+    storage_service_class = config.maybe_dotted(
         config.registry.settings["tuf.storage_backend"]
     )
-    return repo_service_class.create_service(None, config)
+    return storage_service_class.create_service(None, config)
 
 
 @warehouse.group()  # pragma: no-branch
@@ -159,10 +160,8 @@ def bump_snapshot(config):
     """
     Bump Snapshot metadata
     """
-    storage_service = _storage_service(config)
-    key_service = _key_service(config)
-
-    repository_bump_snapshot(config, storage_service, key_service)
+    request = config.task(_bump_snapshot).get_request()
+    config.task(_bump_snapshot).run(request)
     click.echo("Snapshot bump finished.")
 
 
@@ -172,10 +171,8 @@ def bump_bin_ns(config):
     """
     Bump BIN-S roles
     """
-    storage_service = _storage_service(config)
-    key_service = _key_service(config)
-
-    repository_bump_bins_ns(config, storage_service, key_service)
+    request = config.task(_bump_bin_ns).get_request()
+    config.task(_bump_bin_ns).run(request)
     click.echo("Hash-bins BIN-S Roles bump finished.")
 
 
