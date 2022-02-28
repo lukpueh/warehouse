@@ -79,7 +79,7 @@ class MetadataRepository:
     def _create_delegated_targets_roles(
         self,
         delegator_metadata: Metadata,
-        snapshot_metadata: Metadata[Snapshot],
+        snapshot_metadata: Optional[Metadata[Snapshot]],
         delegate_role_parameters: List[RolesPayload],
     ) -> Metadata[Snapshot]:
         """
@@ -101,6 +101,8 @@ class MetadataRepository:
              The updated Snapshot Metadata
              ``tuf.api.metadata.Metadata``
         """
+        if not snapshot_metadata:
+            snapshot_metadata = self.load_role(Snapshot.Type)
 
         for role_parameter in delegate_role_parameters:
             rolename = role_parameter.delegation_role
@@ -137,7 +139,9 @@ class MetadataRepository:
                 role_metadata.sign(SSlibSigner(key), append=True)
 
             self._store(rolename, role_metadata)
-            self.snapshot_update_meta(rolename, role_metadata.signed.version)
+            snapshot_metadata = self.snapshot_update_meta(
+                rolename, role_metadata.signed.version, snapshot_metadata
+            )
 
         return snapshot_metadata
 

@@ -13,7 +13,7 @@ import redis
 
 from warehouse.tasks import task
 from warehouse.tuf.constants import TUF_REPO_LOCK
-from warehouse.tuf.interfaces import IRepositoryService
+from warehouse.tuf.services import IRepositoryService
 
 
 @task(bind=True, ignore_result=True, acks_late=True)
@@ -41,9 +41,33 @@ def bump_bin_ns(task, request):
 
 
 @task(bind=True, ignore_result=True, acks_late=True)
-def add_target(task, request, filepath, fileinfo, rolename):
+def init_repository(task, request):
+    repository_service = request.find_service(IRepositoryService)
+    repository_service.init_repository()
+
+
+@task(bind=True, ignore_result=True, acks_late=True)
+def delegate_targets_bin_bins(task, request):
     r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
 
     with r.lock(TUF_REPO_LOCK):
         repository_service = request.find_service(IRepositoryService)
-        repository_service.add_target(filepath, fileinfo, rolename)
+        repository_service.delegate_targets_bin_bins()
+
+
+@task(bind=True, ignore_result=True, acks_late=True)
+def add_targets_packages(task, request):
+    r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
+
+    with r.lock(TUF_REPO_LOCK):
+        repository_service = request.find_service(IRepositoryService)
+        repository_service.add_targets_packages()
+
+
+@task(bind=True, ignore_result=True, acks_late=True)
+def add_hashed_targets(task, request, targets):
+    r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
+
+    with r.lock(TUF_REPO_LOCK):
+        repository_service = request.find_service(IRepositoryService)
+        repository_service.add_hashed_targets(targets)

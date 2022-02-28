@@ -88,7 +88,7 @@ inittuf:
 	$(WAREHOUSE_CLI) tuf dev keypair --name bin-n --path /opt/warehouse/src/dev/tufkeys/bin-n
 	$(WAREHOUSE_CLI) tuf dev new-repo
 	$(WAREHOUSE_CLI) tuf admin delegate-targets-roles
-	$(WAREHOUSE_CLI) tuf dev add-targets
+	$(WAREHOUSE_CLI) tuf admin add-all-packages
 
 reindex:
 	docker-compose run --rm web python -m warehouse search reindex

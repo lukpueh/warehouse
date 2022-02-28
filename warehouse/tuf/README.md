@@ -145,6 +145,9 @@ The idea is to start implementing small PRs to evaluate and progress.
   - The ``IStorageService`` was used in the 
   ``warehouse.tuf.repository.MetadataRepository`` as backend storage.
 
+  - The ``warehouse.cli.tuf`` calls goes through ``warehouse.cli.tasks``, meaning
+  that all calls goes trough Celery.
+
 
   ```mermaid
     classDiagram 
@@ -169,16 +172,19 @@ The idea is to start implementing small PRs to evaluate and progress.
         IRepositoryService(Interface)
       }
       class `tuf.services` {
+        IKeyService
+        IRepositoryService
+        IStorageService        
         LocalKeyService(IKeyService)
         LocalStorageService(IStorageService)
         LocalRepositoryService(IRepositoryService)
       }
-      class `tuf.utils` {
-      }
       class `tuf.tasks` {
-        bump_snapshot()
-        bump_bin_ns()
-        add_targets()
+        init_repository
+        delegate_targets_bin_bins
+        bump_snapshot
+        bump_bin_ns
+        add_targets_packages
       }
 
       class `cli.tuf`{
@@ -191,12 +197,10 @@ The idea is to start implementing small PRs to evaluate and progress.
       }
 
 
-      `tuf.utils` -- `tuf.services`
       `tuf.services` <|-- `tuf.interfaces`
       `tuf.services` --* MetadataRepository
       `tuf.tasks` -- `tuf.services`
-      `cli.tuf` -- `tuf.services`
-      `cli.tuf` -- MetadataRepository
+      `cli.tuf` -- `tuf.tasks`
       warehouse -- `cli.tuf`
       warehouse -- `tuf.tasks`
   ```

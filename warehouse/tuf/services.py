@@ -11,6 +11,7 @@
 # limitations under the License.
 
 
+import datetime
 import glob
 import os.path
 import shutil
@@ -25,11 +26,16 @@ from securesystemslib.interface import (
 )
 from zope.interface import implementer
 
-from warehouse.tuf.constants import Role
+from warehouse.config import Environment
+from warehouse.tuf.constants import BIN_N_COUNT, Role
+from warehouse.tuf.hash_bins import HashBins
 from warehouse.tuf.interfaces import IKeyService, IRepositoryService, IStorageService
-from warehouse.tuf.repository import MetadataRepository, TargetsPayload
-from warehouse.tuf.tasks import add_target
-from warehouse.tuf.utils import GCSBackend, make_fileinfo, set_expiration_for_role
+from warehouse.tuf.repository import (
+    TOP_LEVEL_ROLE_NAMES,
+    MetadataRepository,
+    RolesPayload,
+    TargetsPayload,
+)
 
 
 class InsecureKeyWarning(UserWarning):
@@ -83,15 +89,13 @@ class LocalKeyService:
 
 @implementer(IStorageService)
 class LocalStorageService:
-    def __init__(self, repo_path, executor):
+    def __init__(self, repo_path):
         self._repo_path = repo_path
-        self._executor = executor
 
     @classmethod
     def create_service(cls, context, request):
         return cls(
             request.registry.settings["tuf.repo.path"],
-            request.task(add_target).delay,
         )
 
     @contextmanager
@@ -139,26 +143,6 @@ class LocalStorageService:
     def store(self, file_object, filename):
         self.put(file_object, filename)
 
-    def load_repository(self):
-        return repository_tool.load_repository(self._repo_path)
-
-    def add_target(self, file, custom=None):
-        fileinfo = make_fileinfo(file, custom=custom)
-        self._executor(file.path, fileinfo)
-
-
-@implementer(IStorageService)
-class GCSStorageService:
-    def __init__(self, request):
-        self._store = GCSBackend(request)
-
-    @classmethod
-    def create_service(cls, context, request):
-        return cls(request)
-
-    def get_backend(self):
-        return self._store
-
 
 @implementer(IRepositoryService)
 class LocalRepositoryService:
@@ -177,6 +161,65 @@ class LocalRepositoryService:
         storage_service = request.find_service(IStorageService)
         key_service = request.find_service(IKeyService)
         return cls(storage_service, key_service, request)
+
+    def _get_hash_bins(self):
+
+        if self._request.registry.settings["warehouse.env"] == Environment.development:
+            number_of_bins = 32
+        else:
+            number_of_bins = BIN_N_COUNT
+
+        return HashBins(number_of_bins)
+
+    def _make_fileinfo(self, file, custom=None):
+        """
+        Create a TUF-compliant "fileinfo" dictionary suitable for addition to a
+        delegated bin.
+
+        The optional "custom" kwarg can be used to supply additional custom
+        metadata (e.g., metadata for indicating backsigning).
+        """
+        hashes = {"blake2b-256": file.blake2_256_digest}
+        fileinfo = dict()
+        fileinfo["length"] = file.size
+        fileinfo["hashes"] = hashes
+        if custom:
+            fileinfo["custom"] = custom
+
+        return fileinfo
+
+    def _set_expiration_for_role(self, role_name):
+        # If we're initializing TUF for development purposes, give
+        # every role a long expiration time so that developers don't have to
+        # continually re-initialize it.
+        if self._request.registry.settings["warehouse.env"] == Environment.development:
+            return datetime.datetime.now().replace(microsecond=0) + datetime.timedelta(
+                seconds=self._request.registry.settings[
+                    "tuf.development_metadata_expiry"
+                ]
+            )
+        else:
+            return datetime.datetime.now().replace(microsecond=0) + datetime.timedelta(
+                seconds=self._request.registry.settings[f"tuf.{role_name}.expiry"]
+            )
+
+    def init_repository(self):
+        metadata_repository = MetadataRepository(
+            self._storage_backend, self._key_storage_backend
+        )
+
+        if metadata_repository.is_initialized:
+            raise FileExistsError("TUF Metadata Repository files already exists.")
+
+        top_roles_payload = dict()
+        for role in TOP_LEVEL_ROLE_NAMES:
+            top_roles_payload[role] = RolesPayload(
+                expiration=self._set_expiration_for_role(role),
+                threshold=self._request.registry.settings[f"tuf.{role}.threshold"],
+                keys=self._key_storage_backend.get(role, "private"),
+            )
+
+        metadata_repository.initialize(top_roles_payload, True)
 
     def bump_snapshot(self):
         """
@@ -197,17 +240,17 @@ class LocalRepositoryService:
 
         # 3. Bump Snapshot role metadata.
         snapshot_metadata = metadata_repository.snapshot_bump_version(
-            snapshot_expires=set_expiration_for_role(
+            snapshot_expires=self._set_expiration_for_role(
                 self._request, Role.SNAPSHOT.value
             ),
             snapshot_metadata=snapshot_metadata,
             store=True,
         )
 
-        # 4. Bump Snapshot role etadata using Timestamp metadata.
+        # 4. Bump Snapshot role metadata using Timestamp metadata.
         metadata_repository.timestamp_bump_version(
             snapshot_version=snapshot_metadata.signed.version,
-            timestamp_expires=set_expiration_for_role(
+            timestamp_expires=self._set_expiration_for_role(
                 self._request, Role.TIMESTAMP.value
             ),
             store=True,
@@ -246,7 +289,7 @@ class LocalRepositoryService:
             metadata_repository.bump_role_version(
                 rolename=role,
                 role_metadata=role_metadata,
-                role_expires=set_expiration_for_role(self._request, Role.BINS.value),
+                role_expires=self._set_expiration_for_role(Role.BINS.value),
                 snapshot_metadata=snapshot_metadata,
                 key_rolename=Role.BIN_N.value,
                 store=True,
@@ -259,7 +302,7 @@ class LocalRepositoryService:
         snapshot_metadata = metadata_repository.bump_role_version(
             rolename=Role.BINS.value,
             role_metadata=bins_metadata,
-            role_expires=set_expiration_for_role(self._request, Role.BINS.value),
+            role_expires=self._set_expiration_for_role(Role.BINS.value),
             snapshot_metadata=snapshot_metadata,
             key_rolename=None,
             store=True,
@@ -267,7 +310,7 @@ class LocalRepositoryService:
 
         # 6. Bump Snapshot with updated metadata
         snapshot_metadata = metadata_repository.snapshot_bump_version(
-            snapshot_expires=set_expiration_for_role(
+            snapshot_expires=self._set_expiration_for_role(
                 self._request, Role.SNAPSHOT.value
             ),
             snapshot_metadata=snapshot_metadata,
@@ -277,30 +320,89 @@ class LocalRepositoryService:
         # Bump Timestamp with updated Snapshot metadata
         metadata_repository.timestamp_bump_version(
             snapshot_version=snapshot_metadata.signed.version,
-            timestamp_expires=set_expiration_for_role(
+            timestamp_expires=self._set_expiration_for_role(
                 self._request, Role.TIMESTAMP.value
             ),
             store=True,
         )
 
-    def add_target(self, path, fileinfo, rolename):
+    def delegate_targets_bin_bins(self):
+        """
+        Delegate targets role bins further delegates to the bin-n roles,
+        which sign for all distribution files belonging to registered PyPI
+        projects.
+        """
+
+        hash_bins = self._get_hash_bins()
+        metadata_repository = MetadataRepository(
+            self._storage_backend, self._key_storage_backend
+        )
+
+        # Delegate first targets -> BINS
+        delegate_roles_payload = dict()
+        delegate_roles_payload["targets"] = list()
+        delegate_roles_payload["targets"].append(
+            RolesPayload(
+                expiration=self._set_expiration_for_role(Role.BINS.value),
+                threshold=self._request.registry.settings[
+                    f"tuf.{Role.BINS.value}.threshold"
+                ],
+                keys=self._key_storage_backend.get(Role.BINS.value, "private"),
+                delegation_role=Role.BINS.value,
+                paths=["*/*/*/*"],
+            )
+        )
+
+        metadata_repository.delegate_targets_roles(
+            delegate_roles_payload,
+            self._set_expiration_for_role(Role.TIMESTAMP.value),
+            self._set_expiration_for_role(Role.SNAPSHOT.value),
+        )
+
+        # Delegates all BINS -> BIN_N (Hash bin prefixes)
+        delegate_roles_payload = dict()
+        delegate_roles_payload[Role.BINS.value] = list()
+        for bin_n_name, bin_n_hash_prefixes in hash_bins.generate():
+            delegate_roles_payload[Role.BINS.value].append(
+                RolesPayload(
+                    expiration=self._set_expiration_for_role(Role.BIN_N.value),
+                    threshold=self._request.registry.settings[
+                        f"tuf.{Role.BIN_N.value}.threshold"
+                    ],
+                    keys=self._key_storage_backend.get(Role.BIN_N.value, "private"),
+                    delegation_role=bin_n_name,
+                    path_hash_prefixes=bin_n_hash_prefixes,
+                )
+            )
+
+        metadata_repository.delegate_targets_roles(
+            delegate_roles_payload,
+            self._set_expiration_for_role(Role.TIMESTAMP.value),
+            self._set_expiration_for_role(Role.SNAPSHOT.value),
+        )
+
+    def add_hashed_targets(self, targets):
         """
         Add Target File
         """
+        hash_bins = self._get_hash_bins()
+        targets_payload = dict()
+        for target in targets:
+            fileinfo = target.get("info")
+            filepath = target.get("path")
+            delegated_role_bin_name = hash_bins.get_delegate(filepath)
+            target_file = TargetsPayload(fileinfo, filepath)
+            if targets_payload.get(delegated_role_bin_name) is None:
+                targets_payload[delegated_role_bin_name] = list()
 
-        # The Repository toll accept a payload with multiple targets file for a
-        # single delegated hashed bin role.
-        payload = {rolename: [TargetsPayload(fileinfo, path)]}
+            targets_payload[delegated_role_bin_name].append(target_file)
 
         metadata_repository = MetadataRepository(
             self._storage_backend, self._key_storage_backend
         )
+
         metadata_repository.add_targets(
-            payload=payload,
-            timestamp_expires=set_expiration_for_role(
-                self._request, Role.TIMESTAMP.value
-            ),
-            snapshot_expires=set_expiration_for_role(
-                self._request, Role.SNAPSHOT.value
-            ),
+            targets_payload,
+            self._set_expiration_for_role(Role.TIMESTAMP.value),
+            self._set_expiration_for_role(Role.SNAPSHOT.value),
         )

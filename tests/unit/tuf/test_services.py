@@ -1,6 +1,5 @@
 import pretend
 
-from tuf.api.metadata import Key
 from zope.interface.verify import verifyClass
 
 from warehouse.tuf.interfaces import IKeyService
@@ -28,10 +27,8 @@ class TestLocalLocalKeyService:
         expected_priv_key_dict = {
             "keytype": "ed25519",
             "scheme": "ed25519",
-            "keyval": {
-                "public": "720a9a588deefd533c36da9b071f7c7b4d08984e87bfc5a18f34618e438434c7"
-            },
-            "keyid": "2de4eb9afe9fb7307f1dd0869a7aec2235d3418bd63f4214d3ba7d23b516f23e",
+            "keyval": {"public": "720a9a588deefd5...4d08984e87bfc5a18f34618e438434c7"},
+            "keyid": "2de4eb9afe9fb73...2235d3418bd63f4214d3ba7d23b516f23e",
             "keyid_hash_algorithms": ["sha256", "sha512"],
         }
         db_request.registry.settings["tuf.root.secret"] = "tuf.root.secret"

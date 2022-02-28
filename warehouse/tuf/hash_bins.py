@@ -27,7 +27,7 @@ class HashBins:
         Hash Bins
 
         Args:
-            number_of_bins: bumber of bins
+            number_of_bins: number of bins
         """
         self.number_of_bins = number_of_bins
         # The prefix length is the number of digits in the hexadecimal representation
