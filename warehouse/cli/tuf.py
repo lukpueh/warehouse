@@ -18,7 +18,7 @@ from warehouse.cli import warehouse
 from warehouse.packaging.utils import render_simple_detail
 from warehouse.tuf.tasks import (
     add_hashed_targets as _add_hashed_targets,
-    bump_bin_ns as _bump_bin_ns,
+    bump_bin_n_roles as _bump_bin_n_roles,
     bump_snapshot as _bump_snapshot,
     delegate_targets_bin_bins as _delegate_targets_bin_bins,
     init_repository as _init_repository,
@@ -86,13 +86,13 @@ def bump_snapshot(config):
 
 @admin.command()
 @click.pass_obj
-def bump_bin_ns(config):
+def bump_bin_n_roles(config):
     """
-    Bump BIN-S roles
+    Bump BIN-N roles
     """
-    request = config.task(_bump_bin_ns).get_request()
-    config.task(_bump_bin_ns).run(request)
-    click.echo("Hash-bins BIN-S Roles bump finished.")
+    request = config.task(_bump_bin_n_roles).get_request()
+    config.task(_bump_bin_n_roles).run(request)
+    click.echo("BIN-N roles (hash bins) bump finished.")
 
 
 @admin.command()
@@ -110,7 +110,7 @@ def delegate_targets_roles(config):
     except FileExistsError as err:
         raise click.ClickException(str(err))
 
-    click.echo("Delegation targets role BIN and BIN-S Roles finished.")
+    click.echo("BINS and BIN-N roles targets delegation finished.")
 
 
 @admin.command()

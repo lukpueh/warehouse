@@ -183,7 +183,7 @@ The idea is to start implementing small PRs to evaluate and progress.
         init_repository
         delegate_targets_bin_bins
         bump_snapshot
-        bump_bin_ns
+        bump_bin_n_roles
         add_targets_packages
       }
 
