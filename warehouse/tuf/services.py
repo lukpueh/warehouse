@@ -344,7 +344,6 @@ class LocalRepositoryService:
                 rolename=role,
                 role_metadata=role_metadata,
                 role_expires=self._set_expiration_for_role(Role.BINS.value),
-                snapshot_metadata=snapshot_metadata,
                 key_rolename=Role.BIN_N.value,
                 store=True,
             )
@@ -381,7 +380,7 @@ class LocalRepositoryService:
             fileinfo = target.get("info")
             filepath = target.get("path")
             delegated_role_bin_name = hash_bins.get_delegate(filepath)
-            target_file = TargetsPayload(fileinfo, filepath)
+            target_file = TargetsPayload(fileinfo, filepath, Role.BINS.value)
             if targets_payload.get(delegated_role_bin_name) is None:
                 targets_payload[delegated_role_bin_name] = list()
 
@@ -395,4 +394,5 @@ class LocalRepositoryService:
             targets_payload,
             self._set_expiration_for_role(Role.TIMESTAMP.value),
             self._set_expiration_for_role(Role.SNAPSHOT.value),
+            Role.BIN_N.type,
         )

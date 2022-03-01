@@ -210,7 +210,8 @@ The idea is to start implementing small PRs to evaluate and progress.
   - Development Commands
     - Generate Key Pairs for the roles
     - Initialize the TUF Repository (keys and metadata) for Development
-    - Add targets files (Packages from Database)
+    - Add targets Packages (Packages from Database)
+    - Add targets Project indexes (Projects from Database that contain files)
   - Administrative Commands
     - Generate the delegations Roles and Hashed bin roles (bins and bin-n)
     - Bump snapshot
@@ -232,8 +233,6 @@ target.
   Goals:
   - Limited for enabling tuf Metadata on development environment
   - Intent to validate the Metadata Repository tool
-
-- [ ] PR to implement the simple detail index to the Metadata
 
 - [ ] PR to implement the TUF in the Warehouse request flow
     - upload target file
@@ -257,5 +256,6 @@ You can also upload a file using the Warehouse and add the targets using CLI
 - Upload file using ``twine``
 
 ```shell
-docker-compose run --rm web python -m warehouse tuf dev add-targets
+docker-compose run --rm web python -m warehouse tuf dev add-all-packages
+docker-compose run --rm web python -m warehouse tuf dev add-all-indexes
 ```

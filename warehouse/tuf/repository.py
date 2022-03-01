@@ -318,16 +318,15 @@ class MetadataRepository:
             snapshot_metadata = self._create_delegated_targets_roles(
                 delegator_metadata, snapshot_metadata, delegate_role_parameters
             )
-            self.bump_role_version(
+            delegator_metadata = self.bump_role_version(
                 rolename=delegator,
                 role_metadata=delegator_metadata,
                 role_expires=delegator_metadata.signed.expires,
-                snapshot_metadata=snapshot_metadata,
                 key_rolename=None,
                 store=True,
             )
             snapshot_metadata = self.snapshot_update_meta(
-                delegator, delegator_metadata.singed.version, snapshot_metadata
+                delegator, delegator_metadata.signed.version, snapshot_metadata
             )
 
         snapshot_metadata = self.snapshot_bump_version(
@@ -344,7 +343,7 @@ class MetadataRepository:
         role_expires: datetime,
         key_rolename: Optional[str] = None,
         store: Optional[bool] = False,
-    ) -> None:
+    ) -> Metadata:
         """
         Bump an specific Role Metadata (ex: delegated target role) version,
         optionaly stores it in the repository storage.
@@ -368,6 +367,8 @@ class MetadataRepository:
 
         if store:
             self._store(rolename, role_metadata)
+
+        return role_metadata
 
     def timestamp_bump_version(
         self,
@@ -465,6 +466,7 @@ class MetadataRepository:
         payload: Dict[str, List[TargetsPayload]],
         timestamp_expires: datetime,
         snapshot_expires: datetime,
+        key_rolename: str,
     ) -> None:
         """
         Add a list of targets from a payload to the Role Metadata, bumps the
@@ -475,6 +477,7 @@ class MetadataRepository:
             payload: Dictionary with role names and list of ``TargetPayload``
             timestamp_expires: New Timestamp expiration datetime
             snapshot_expires: New Snapshot expiration datetime
+            rolename_key: Key signer rolename
         """
         snapshot_metadata = self.load_role(Snapshot.type)
 
@@ -485,17 +488,16 @@ class MetadataRepository:
                 role_metadata.signed.targets[target.path] = target_file
 
             role_metadata.signed.version += 1
-            role_keys = self.key_backend.get(RoleWarehouse.BIN_N.value, "private")
+            role_keys = self.key_backend.get(key_rolename, "private")
             for key in role_keys:
                 role_metadata.sign(SSlibSigner(key), append=True)
 
             self._store(rolename, role_metadata)
-            self.bump_role_version(
+            role_metadata = self.bump_role_version(
                 rolename=rolename,
                 role_metadata=role_metadata,
                 role_expires=role_metadata.signed.expires,
-                snapshot_metadata=snapshot_metadata,
-                key_rolename=RoleWarehouse.BIN_N.value,
+                key_rolename=key_rolename,
                 store=True,
             )
             snapshot_metadata = self.snapshot_update_meta(
