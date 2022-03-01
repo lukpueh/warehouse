@@ -267,9 +267,8 @@ class LocalRepositoryService:
         # 3. Load BINS role.
         # 4. For each BIN-N role (hash bin) in BINS, fetch the
         #    role, bump, write back to the repo and update Snapshot role MetaFile.
-        # 5. Bump BINS and write back to repository.
-        # 6. Bump Snapshot and write back to repository.
-        # 7. Bump Timestamp role (using updated Snapshot) and write back to
+        # 5. Bump Snapshot and write back to repository.
+        # 6. Bump Timestamp role (using updated Snapshot) and write back to
         #    repository.
 
         # 1. Metadata Repository
@@ -298,17 +297,7 @@ class LocalRepositoryService:
                 role, role_metadata.signed.version, snapshot_metadata
             )
 
-        # 5. Bump BINS with updated metadata
-        snapshot_metadata = metadata_repository.bump_role_version(
-            rolename=Role.BINS.value,
-            role_metadata=bins_metadata,
-            role_expires=self._set_expiration_for_role(Role.BINS.value),
-            snapshot_metadata=snapshot_metadata,
-            key_rolename=None,
-            store=True,
-        )
-
-        # 6. Bump Snapshot with updated metadata
+        # 5. Bump Snapshot with updated metadata
         snapshot_metadata = metadata_repository.snapshot_bump_version(
             snapshot_expires=self._set_expiration_for_role(
                 self._request, Role.SNAPSHOT.value
@@ -317,7 +306,7 @@ class LocalRepositoryService:
             store=True,
         )
 
-        # Bump Timestamp with updated Snapshot metadata
+        # 6. Bump Timestamp with updated Snapshot metadata
         metadata_repository.timestamp_bump_version(
             snapshot_version=snapshot_metadata.signed.version,
             timestamp_expires=self._set_expiration_for_role(
