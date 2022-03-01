@@ -137,3 +137,34 @@ def add_all_packages(config):
         targets.append({"info": targetinfo, "path": file.path})
 
     config.task(_add_hashed_targets).run(request, targets)
+
+
+@admin.command()
+@click.pass_obj
+def add_all_indexes(config):
+    """
+    Collect the Project Index
+    """
+    from warehouse.db import Session
+    from warehouse.packaging.models import Project
+
+    request = config.task(_add_hashed_targets).get_request()
+    request.db = Session(bind=request.registry["sqlalchemy.engine"])
+
+    targets = list()
+    for project in request.db.query(Project).all():
+        try:
+            simple_detail = render_simple_detail(project, request, store=True)
+        except OSError as err:
+            click.ClickException(str(err))
+
+        if simple_detail.get("content_hash") is None:
+            continue
+        hashes = {"blake2b-256": simple_detail.get("content_hash")}
+        targetinfo = dict()
+        targetinfo["hashes"] = hashes
+        targetinfo["length"] = simple_detail.get("length")
+        targetinfo["custom"] = {"backsigned": True}
+        targets.append({"info": targetinfo, "path": f"{project.normalized_name}.html"})
+
+    config.task(_add_hashed_targets).run(request, targets)

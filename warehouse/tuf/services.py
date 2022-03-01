@@ -349,7 +349,7 @@ class LocalRepositoryService:
                 ],
                 keys=self._key_storage_backend.get(Role.BINS.value, "private"),
                 delegation_role=Role.BINS.value,
-                paths=["*/*/*/*"],
+                paths=["*", "*/*/*/*"],
             )
         )
 
