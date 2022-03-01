@@ -20,8 +20,8 @@ from warehouse.tuf.tasks import (
     add_hashed_targets as _add_hashed_targets,
     bump_bin_n_roles as _bump_bin_n_roles,
     bump_snapshot as _bump_snapshot,
-    init_targets_delegation as _init_targets_delegation,
     init_repository as _init_repository,
+    init_targets_delegation as _init_targets_delegation,
 )
 
 

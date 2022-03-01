@@ -318,13 +318,16 @@ class MetadataRepository:
             snapshot_metadata = self._create_delegated_targets_roles(
                 delegator_metadata, snapshot_metadata, delegate_role_parameters
             )
-            snapshot_metadata = self.bump_role_version(
+            self.bump_role_version(
                 rolename=delegator,
                 role_metadata=delegator_metadata,
                 role_expires=delegator_metadata.signed.expires,
                 snapshot_metadata=snapshot_metadata,
                 key_rolename=None,
                 store=True,
+            )
+            snapshot_metadata = self.snapshot_update_meta(
+                delegator, delegator_metadata.singed.version, snapshot_metadata
             )
 
         snapshot_metadata = self.snapshot_bump_version(
@@ -339,25 +342,19 @@ class MetadataRepository:
         rolename: str,
         role_metadata: Metadata,
         role_expires: datetime,
-        snapshot_metadata: Metadata[Snapshot],
         key_rolename: Optional[str] = None,
         store: Optional[bool] = False,
-    ) -> Metadata[Snapshot]:
+    ) -> None:
         """
         Bump an specific Role Metadata (ex: delegated target role) version,
-        optionaly stores it in the repository storage and uppdating the Snapshot
-        role meta.
+        optionaly stores it in the repository storage.
 
         Args:
             rolename: Specific Role name to have the version bumped
             role_metadata: Specific Role Metadata
             role_expires: expiration datetime
-            snapshot_metadata: Snapshot Metadata
             key_rolename: Different signing Key role name
             store: Optional, Default False, stores in the repository storage
-        Returns:
-            Updated Snapshot Metadata
-            ``Metadata[Snapshot]``
         """
         if key_rolename:
             key_rolename = key_rolename
@@ -371,10 +368,6 @@ class MetadataRepository:
 
         if store:
             self._store(rolename, role_metadata)
-
-        return self.snapshot_update_meta(
-            rolename, role_metadata.signed.version, snapshot_metadata
-        )
 
     def timestamp_bump_version(
         self,
@@ -497,13 +490,16 @@ class MetadataRepository:
                 role_metadata.sign(SSlibSigner(key), append=True)
 
             self._store(rolename, role_metadata)
-            snapshot_metadata = self.bump_role_version(
+            self.bump_role_version(
                 rolename=rolename,
                 role_metadata=role_metadata,
                 role_expires=role_metadata.signed.expires,
                 snapshot_metadata=snapshot_metadata,
                 key_rolename=RoleWarehouse.BIN_N.value,
                 store=True,
+            )
+            snapshot_metadata = self.snapshot_update_meta(
+                rolename, role_metadata.singed.version, snapshot_metadata
             )
 
         snapshot_metadata = self.snapshot_bump_version(
