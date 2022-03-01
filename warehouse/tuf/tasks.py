@@ -56,15 +56,6 @@ def delegate_targets_bin_bins(task, request):
 
 
 @task(bind=True, ignore_result=True, acks_late=True)
-def add_targets_packages(task, request):
-    r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
-
-    with r.lock(TUF_REPO_LOCK):
-        repository_service = request.find_service(IRepositoryService)
-        repository_service.add_targets_packages()
-
-
-@task(bind=True, ignore_result=True, acks_late=True)
 def add_hashed_targets(task, request, targets):
     r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
 

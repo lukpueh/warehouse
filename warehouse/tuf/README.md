@@ -184,7 +184,7 @@ The idea is to start implementing small PRs to evaluate and progress.
         delegate_targets_bin_bins
         bump_snapshot
         bump_bin_n_roles
-        add_targets_packages
+        add_hashed_targets
       }
 
       class `cli.tuf`{
