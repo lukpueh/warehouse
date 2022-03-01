@@ -348,9 +348,10 @@ class LocalRepositoryService:
                 key_rolename=Role.BIN_N.value,
                 store=True,
             )
-            snapshot_metadata = metadata_repository.snapshot_update_meta(
-                role, role_metadata.signed.version, snapshot_metadata
-            )
+            # FIXME: Update snapshot here OR in bump_role_version, not both!
+            # snapshot_metadata = metadata_repository.snapshot_update_meta(
+            #     role, role_metadata.signed.version, snapshot_metadata
+            # )
 
         # 5. Bump Snapshot with updated metadata
         snapshot_metadata = metadata_repository.snapshot_bump_version(
