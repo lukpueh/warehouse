@@ -14,7 +14,7 @@ from celery.schedules import crontab
 
 from warehouse.tuf.interfaces import IKeyService, IRepositoryService, IStorageService
 from warehouse.tuf.repository import SPEC_VERSION
-from warehouse.tuf.tasks import bump_bin_ns, bump_snapshot
+from warehouse.tuf.tasks import bump_bin_n_roles, bump_snapshot
 
 
 def includeme(config):
@@ -69,4 +69,4 @@ def includeme(config):
     # note in tuf/__init__.py.
     # We conservatively bump all delegated bins at least once daily.
     config.add_periodic_task(crontab(minute=0, hour="*/6"), bump_snapshot)
-    config.add_periodic_task(crontab(minute=0, hour=0), bump_bin_ns)
+    config.add_periodic_task(crontab(minute=0, hour=0), bump_bin_n_roles)

@@ -32,12 +32,12 @@ def bump_snapshot(task, request):
 
 
 @task(bind=True, ignore_result=True, acks_late=True)
-def bump_bin_ns(task, request):
+def bump_bin_n_roles(task, request):
     r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
 
     with r.lock(TUF_REPO_LOCK):
         repository_service = request.find_service(IRepositoryService)
-        repository_service.bump_bins_ns()
+        repository_service.bump_bin_n_roles()
 
 
 @task(bind=True, ignore_result=True, acks_late=True)
@@ -47,21 +47,12 @@ def init_repository(task, request):
 
 
 @task(bind=True, ignore_result=True, acks_late=True)
-def delegate_targets_bin_bins(task, request):
+def init_targets_delegation(task, request):
     r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
 
     with r.lock(TUF_REPO_LOCK):
         repository_service = request.find_service(IRepositoryService)
-        repository_service.delegate_targets_bin_bins()
-
-
-@task(bind=True, ignore_result=True, acks_late=True)
-def add_targets_packages(task, request):
-    r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
-
-    with r.lock(TUF_REPO_LOCK):
-        repository_service = request.find_service(IRepositoryService)
-        repository_service.add_targets_packages()
+        repository_service.init_targets_delegation()
 
 
 @task(bind=True, ignore_result=True, acks_late=True)
