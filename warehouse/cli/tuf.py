@@ -95,7 +95,7 @@ def bump_bin_n_roles(config):
     click.echo("BIN-N roles (hash bins) bump finished.")
 
 
-@admin.command()
+@dev.command()
 @click.pass_obj
 def delegate_targets_roles(config):
     """

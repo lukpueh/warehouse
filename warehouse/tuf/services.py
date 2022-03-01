@@ -163,7 +163,9 @@ class LocalRepositoryService:
         return cls(storage_service, key_service, request)
 
     def _get_hash_bins(self):
-
+        """
+        Returns hash bin management object for production or development environment.
+        """
         if self._request.registry.settings["warehouse.env"] == Environment.development:
             number_of_bins = 32
         else:
@@ -173,8 +175,7 @@ class LocalRepositoryService:
 
     def _make_fileinfo(self, file, custom=None):
         """
-        Create a TUF-compliant "fileinfo" dictionary suitable for addition to a
-        delegated bin.
+        Creates a TUF-compliant "fileinfo" dictionary suitable for targets metadata.
 
         The optional "custom" kwarg can be used to supply additional custom
         metadata (e.g., metadata for indicating backsigning).
@@ -189,9 +190,11 @@ class LocalRepositoryService:
         return fileinfo
 
     def _set_expiration_for_role(self, role_name):
-        # If we're initializing TUF for development purposes, give
-        # every role a long expiration time so that developers don't have to
-        # continually re-initialize it.
+        """
+        Returns metadata expiration date (now + role-specific expiration interval).
+        """
+        # In a development environment metadata expires less frequently  so that
+        # developers don't have to continually re-initialize it.
         if self._request.registry.settings["warehouse.env"] == Environment.development:
             return datetime.datetime.now().replace(microsecond=0) + datetime.timedelta(
                 seconds=self._request.registry.settings[
@@ -204,6 +207,16 @@ class LocalRepositoryService:
             )
 
     def init_repository(self):
+        """
+        Create TUF metadata for top-level roles: 'root', 'targets', 'snapshot' and
+        'timestamp'.
+
+        Metadata is populated with configured expiration times, signature thresholds and
+        verification keys and signed with corresponding private keys in key storage.
+
+        NOTE: In production 'root' and 'targets' roles require offline singing keys,
+        which may not all be available at the time of initializing the metadata.
+        """
         metadata_repository = MetadataRepository(
             self._storage_backend, self._key_storage_backend
         )
@@ -223,17 +236,24 @@ class LocalRepositoryService:
 
     def init_targets_delegation(self):
         """
-        Delegate targets role bins further delegates to the bin-n roles,
-        which sign for all distribution files belonging to registered PyPI
-        projects.
-        """
+        Create TUF metadata for delegated targets roles 'bins' and 'bin-n' (multiple)
+        using hashed bin delegation.
 
+        Metadata is populated with configured number of bins, expiration times,
+        signature thresholds and verification keys and signed with corresponding private
+        keys in key storage.
+
+
+        NOTE: In production the 'bins' role requires a one-time offline singing key,
+        which may not be available at the time of initializing the metadata.
+
+        """
         hash_bins = self._get_hash_bins()
         metadata_repository = MetadataRepository(
             self._storage_backend, self._key_storage_backend
         )
 
-        # Delegate first targets -> BINS
+        # Delegate from top-level 'targets' role to 'bins' role
         delegate_roles_payload = dict()
         delegate_roles_payload["targets"] = list()
         delegate_roles_payload["targets"].append(
@@ -254,7 +274,7 @@ class LocalRepositoryService:
             self._set_expiration_for_role(Role.SNAPSHOT.value),
         )
 
-        # Delegates all BINS -> BIN_N (Hash bin prefixes)
+        # Delegates from 'bins' role to 'bin-n' roles
         delegate_roles_payload = dict()
         delegate_roles_payload[Role.BINS.value] = list()
         for bin_n_name, bin_n_hash_prefixes in hash_bins.generate():
@@ -278,7 +298,11 @@ class LocalRepositoryService:
 
     def bump_snapshot(self):
         """
-        Bump Snapshot Role Metadata
+        Re-signs the TUF snapshot role, incrementing its version number and renewing its
+        expiration period.
+
+        Bumping the snapshot transitively bumps the timestamp role, with updated
+        snapshot information.
         """
         # Bumping the Snapshot role involves the following steps:
         # 1. Initiate Metadata Repository.

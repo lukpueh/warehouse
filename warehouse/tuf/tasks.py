@@ -33,6 +33,12 @@ def bump_snapshot(task, request):
 
 @task(bind=True, ignore_result=True, acks_late=True)
 def bump_bin_n_roles(task, request):
+    """
+    Re-signs all TUF bin-n roles, incrementing their version numbers and renewing their
+    expiration period.
+
+    Bumping bin-n roles transitively bumps snapshot and timestamp roles.
+    """
     r = redis.StrictRedis.from_url(request.registry.settings["celery.scheduler_url"])
 
     with r.lock(TUF_REPO_LOCK):
