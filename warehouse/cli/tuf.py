@@ -20,7 +20,7 @@ from warehouse.tuf.tasks import (
     add_hashed_targets as _add_hashed_targets,
     bump_bin_n_roles as _bump_bin_n_roles,
     bump_snapshot as _bump_snapshot,
-    delegate_targets_bin_bins as _delegate_targets_bin_bins,
+    init_targets_delegation as _init_targets_delegation,
     init_repository as _init_repository,
 )
 
@@ -104,9 +104,9 @@ def delegate_targets_roles(config):
     Given an initialized (but empty) TUF repository, create the delegated
     targets role (bins) and its hashed bin delegations (each bin-n).
     """
-    request = config.task(_delegate_targets_bin_bins).get_request()
+    request = config.task(_init_targets_delegation).get_request()
     try:
-        config.task(_delegate_targets_bin_bins).run(request)
+        config.task(_init_targets_delegation).run(request)
     except FileExistsError as err:
         raise click.ClickException(str(err))
 

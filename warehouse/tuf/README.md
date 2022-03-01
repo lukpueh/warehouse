@@ -181,7 +181,7 @@ The idea is to start implementing small PRs to evaluate and progress.
       }
       class `tuf.tasks` {
         init_repository
-        delegate_targets_bin_bins
+        init_targets_delegation
         bump_snapshot
         bump_bin_n_roles
         add_hashed_targets

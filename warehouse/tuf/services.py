@@ -221,6 +221,61 @@ class LocalRepositoryService:
 
         metadata_repository.initialize(top_roles_payload, True)
 
+    def init_targets_delegation(self):
+        """
+        Delegate targets role bins further delegates to the bin-n roles,
+        which sign for all distribution files belonging to registered PyPI
+        projects.
+        """
+
+        hash_bins = self._get_hash_bins()
+        metadata_repository = MetadataRepository(
+            self._storage_backend, self._key_storage_backend
+        )
+
+        # Delegate first targets -> BINS
+        delegate_roles_payload = dict()
+        delegate_roles_payload["targets"] = list()
+        delegate_roles_payload["targets"].append(
+            RolesPayload(
+                expiration=self._set_expiration_for_role(Role.BINS.value),
+                threshold=self._request.registry.settings[
+                    f"tuf.{Role.BINS.value}.threshold"
+                ],
+                keys=self._key_storage_backend.get(Role.BINS.value, "private"),
+                delegation_role=Role.BINS.value,
+                paths=["*/*/*/*"],
+            )
+        )
+
+        metadata_repository.delegate_targets_roles(
+            delegate_roles_payload,
+            self._set_expiration_for_role(Role.TIMESTAMP.value),
+            self._set_expiration_for_role(Role.SNAPSHOT.value),
+        )
+
+        # Delegates all BINS -> BIN_N (Hash bin prefixes)
+        delegate_roles_payload = dict()
+        delegate_roles_payload[Role.BINS.value] = list()
+        for bin_n_name, bin_n_hash_prefixes in hash_bins.generate():
+            delegate_roles_payload[Role.BINS.value].append(
+                RolesPayload(
+                    expiration=self._set_expiration_for_role(Role.BIN_N.value),
+                    threshold=self._request.registry.settings[
+                        f"tuf.{Role.BIN_N.value}.threshold"
+                    ],
+                    keys=self._key_storage_backend.get(Role.BIN_N.value, "private"),
+                    delegation_role=bin_n_name,
+                    path_hash_prefixes=bin_n_hash_prefixes,
+                )
+            )
+
+        metadata_repository.delegate_targets_roles(
+            delegate_roles_payload,
+            self._set_expiration_for_role(Role.TIMESTAMP.value),
+            self._set_expiration_for_role(Role.SNAPSHOT.value),
+        )
+
     def bump_snapshot(self):
         """
         Bump Snapshot Role Metadata
@@ -313,61 +368,6 @@ class LocalRepositoryService:
                 self._request, Role.TIMESTAMP.value
             ),
             store=True,
-        )
-
-    def delegate_targets_bin_bins(self):
-        """
-        Delegate targets role bins further delegates to the bin-n roles,
-        which sign for all distribution files belonging to registered PyPI
-        projects.
-        """
-
-        hash_bins = self._get_hash_bins()
-        metadata_repository = MetadataRepository(
-            self._storage_backend, self._key_storage_backend
-        )
-
-        # Delegate first targets -> BINS
-        delegate_roles_payload = dict()
-        delegate_roles_payload["targets"] = list()
-        delegate_roles_payload["targets"].append(
-            RolesPayload(
-                expiration=self._set_expiration_for_role(Role.BINS.value),
-                threshold=self._request.registry.settings[
-                    f"tuf.{Role.BINS.value}.threshold"
-                ],
-                keys=self._key_storage_backend.get(Role.BINS.value, "private"),
-                delegation_role=Role.BINS.value,
-                paths=["*/*/*/*"],
-            )
-        )
-
-        metadata_repository.delegate_targets_roles(
-            delegate_roles_payload,
-            self._set_expiration_for_role(Role.TIMESTAMP.value),
-            self._set_expiration_for_role(Role.SNAPSHOT.value),
-        )
-
-        # Delegates all BINS -> BIN_N (Hash bin prefixes)
-        delegate_roles_payload = dict()
-        delegate_roles_payload[Role.BINS.value] = list()
-        for bin_n_name, bin_n_hash_prefixes in hash_bins.generate():
-            delegate_roles_payload[Role.BINS.value].append(
-                RolesPayload(
-                    expiration=self._set_expiration_for_role(Role.BIN_N.value),
-                    threshold=self._request.registry.settings[
-                        f"tuf.{Role.BIN_N.value}.threshold"
-                    ],
-                    keys=self._key_storage_backend.get(Role.BIN_N.value, "private"),
-                    delegation_role=bin_n_name,
-                    path_hash_prefixes=bin_n_hash_prefixes,
-                )
-            )
-
-        metadata_repository.delegate_targets_roles(
-            delegate_roles_payload,
-            self._set_expiration_for_role(Role.TIMESTAMP.value),
-            self._set_expiration_for_role(Role.SNAPSHOT.value),
         )
 
     def add_hashed_targets(self, targets):
