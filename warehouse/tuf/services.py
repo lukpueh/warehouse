@@ -177,8 +177,8 @@ class LocalRepositoryService:
         """
         Creates a TUF-compliant "fileinfo" dictionary suitable for targets metadata.
 
-        The optional "custom" kwarg can be used to supply additional custom
-        metadata (e.g., metadata for indicating backsigning).
+        The optional "custom" kwarg can be used for additional metadata about target
+        files (e.g., to indicate backsigning).
         """
         hashes = {"blake2b-256": file.blake2_256_digest}
         fileinfo = dict()
@@ -208,14 +208,14 @@ class LocalRepositoryService:
 
     def init_repository(self):
         """
-        Create TUF metadata for top-level roles: 'root', 'targets', 'snapshot' and
+        Creates TUF metadata for top-level roles 'root', 'targets', 'snapshot' and
         'timestamp'.
 
         Metadata is populated with configured expiration times, signature thresholds and
-        verification keys and signed with corresponding private keys in key storage.
+        verification keys, and signed with associated private keys in the key storage.
 
         NOTE: In production 'root' and 'targets' roles require offline singing keys,
-        which may not all be available at the time of initializing the metadata.
+        which may not be available at the time of initializing the metadata.
         """
         metadata_repository = MetadataRepository(
             self._storage_backend, self._key_storage_backend
@@ -236,24 +236,22 @@ class LocalRepositoryService:
 
     def init_targets_delegation(self):
         """
-        Create TUF metadata for delegated targets roles 'bins' and 'bin-n' (multiple)
+        Creates TUF metadata for delegated targets roles 'bins' and 'bin-n' (multiple)
         using hashed bin delegation.
 
         Metadata is populated with configured number of bins, expiration times,
-        signature thresholds and verification keys and signed with corresponding private
+        signature thresholds and verification keys, and signed with associated private
         keys in key storage.
-
 
         NOTE: In production the 'bins' role requires a one-time offline singing key,
         which may not be available at the time of initializing the metadata.
-
         """
         hash_bins = self._get_hash_bins()
         metadata_repository = MetadataRepository(
             self._storage_backend, self._key_storage_backend
         )
 
-        # Delegate from top-level 'targets' role to 'bins' role
+        # Top-level 'targets' role delegates trust for all target files to 'bins' role.
         delegate_roles_payload = dict()
         delegate_roles_payload["targets"] = list()
         delegate_roles_payload["targets"].append(
@@ -274,7 +272,8 @@ class LocalRepositoryService:
             self._set_expiration_for_role(Role.SNAPSHOT.value),
         )
 
-        # Delegates from 'bins' role to 'bin-n' roles
+        # The 'bins' role delegates trust for target files to 'bin-n' roles based on
+        # target file path hash prefixes.
         delegate_roles_payload = dict()
         delegate_roles_payload[Role.BINS.value] = list()
         for bin_n_name, bin_n_hash_prefixes in hash_bins.generate():
@@ -298,18 +297,16 @@ class LocalRepositoryService:
 
     def bump_snapshot(self):
         """
-        Re-signs the TUF snapshot role, incrementing its version number and renewing its
-        expiration period.
+        Bump version and expiration date of TUF top-level 'snapshot' role.
 
-        Bumping the snapshot transitively bumps the timestamp role, with updated
-        snapshot information.
+
+        Increments version number by one, renews expiration date using a configured
+        expiration interval, and signs the role metadata with the associated private key
+        in key storage.
+
+        Bumping snapshot transitively bumps the 'timestamp' role, with the updated
+        snapshot information in timestamp.
         """
-        # Bumping the Snapshot role involves the following steps:
-        # 1. Initiate Metadata Repository.
-        # 2. Load the Snapshot Role.
-        # 3. Bump Snapshot role (and write to the Storage).
-        # 4. Bump Timestamp role using the new Snapshot Metadata.
-        # 1. Metadata Repository.
         metadata_repository = MetadataRepository(
             self._storage_backend, self._key_storage_backend
         )
