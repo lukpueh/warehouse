@@ -292,6 +292,7 @@ def test_configure(monkeypatch, settings, environment):
                         "IntrospectionDebugPanel"
                     ),
                 ],
+                "tuf.development_metadata_expiry": 31536000,
             }
         )
 
