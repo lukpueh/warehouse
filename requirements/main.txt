@@ -303,7 +303,9 @@ datadog==0.43.0 \
 deprecated==1.2.13 \
     --hash=sha256:43ac5335da90c31c24ba028af536a91d41d53f9e6901ddb021bcc572ce44e38d \
     --hash=sha256:64756e3e14c8c5eea9795d93c524551432a0be75629f8f29e67ab8caf076c76d
-    # via redis
+    # via
+    #   limits
+    #   redis
 disposable-email-domains==0.0.76 \
     --hash=sha256:4bb8bd7df6bbf37fccff29ae454dd7306b78fdbc7cd5572b499481dd43f44ff3 \
     --hash=sha256:a7965be51f98933174106278a68dffff2e2d4d31923b9851edc4928ab73ce495
@@ -601,9 +603,9 @@ kombu==5.2.3 \
     --hash=sha256:81a90c1de97e08d3db37dbf163eaaf667445e1068c98bfd89f051a40e9f6dbbd \
     --hash=sha256:eeaeb8024f3a5cfc71c9250e45cddb8493f269d74ada2f74909a93c59c4b4179
     # via celery
-limits==2.3.3 \
-    --hash=sha256:9ead6236a71eb1d9a18d7e3b1faa58d588ea3510e55514fae58babc0a3223986 \
-    --hash=sha256:d4270d29591cc5eceab19be053455a4e619ba395062502bde2b5681af7dc1be8
+limits==2.5.2 \
+    --hash=sha256:8345e38efb7497c6aa6cb59550f0fc6d4d1d42799a139adf584849fb90bfa33e \
+    --hash=sha256:c9553d66227be6eb6fabbb49240c433a9aa4e2f8a5ed8f9f27cb5bb3dc64c837
     # via -r requirements/main.in
 lxml==4.8.0 \
     --hash=sha256:078306d19a33920004addeb5f4630781aaeabb6a8d01398045fcde085091a169 \
@@ -771,6 +773,7 @@ packaging==21.3 \
     #   -r requirements/main.in
     #   bleach
     #   google-cloud-bigquery
+    #   limits
     #   redis
 paginate==0.5.6 \
     --hash=sha256:5e6007b6a9398177a7e1648d04fdd9f8c9766a1a945bceac82f1929e8c78af2d
@@ -1180,7 +1183,9 @@ typeguard==2.13.3 \
 typing-extensions==4.1.1 \
     --hash=sha256:1a9462dcc3347a79b1f1c0271fbe79e844580bb598bafa1ed208b94da3cdcd42 \
     --hash=sha256:21c85e0fe4b9a155d0799430b0ad741cdce7e359660ccbd8b530613e8df88ce2
-    # via pydantic
+    # via
+    #   limits
+    #   pydantic
 urllib3==1.26.8 \
     --hash=sha256:000ca7f471a233c2251c6c7023ee85305721bfdf18621ebff4fd17a8653427ed \
     --hash=sha256:0e7c33d9a63e7ddfcb86780aac87befc2fbddf46c58dbb487e0855f7ceec283c
