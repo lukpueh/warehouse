@@ -225,6 +225,7 @@ def configure(settings=None):
         coercer=int,
         default=21600,  # 6 hours
     )
+    maybe_set(settings, "tuf.url", "TUF_URL")
     maybe_set(settings, "tuf.root.secret", "TUF_ROOT_SECRET")
     maybe_set(settings, "tuf.snapshot.secret", "TUF_SNAPSHOT_SECRET")
     maybe_set(settings, "tuf.targets.secret", "TUF_TARGETS_SECRET")
