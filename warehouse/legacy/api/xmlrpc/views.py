@@ -151,9 +151,9 @@ def xmlrpc_method(**kwargs):
     )
 
     def decorator(f):
-        rpc2 = _xmlrpc_method(endpoint="RPC2", **kwargs)
-        pypi = _xmlrpc_method(endpoint="pypi", **kwargs)
-        pypi_slash = _xmlrpc_method(endpoint="pypi_slash", **kwargs)
+        rpc2 = _xmlrpc_method(endpoint="xmlrpc.RPC2", **kwargs)
+        pypi = _xmlrpc_method(endpoint="xmlrpc.pypi", **kwargs)
+        pypi_slash = _xmlrpc_method(endpoint="xmlrpc.pypi_slash", **kwargs)
         return rpc2(pypi_slash(pypi(f)))
 
     return decorator
@@ -195,7 +195,7 @@ class XMLRPCInvalidParamTypes(XmlRpcInvalidMethodParams):
         return f"client error; {self.exc}"
 
 
-class XMLRPCWrappedError(xmlrpc.server.Fault):
+class XMLRPCWrappedError(xmlrpc.client.Fault):
     def __init__(self, exc):
         # NOQA due to N815 'mixedCase variable in class scope',
         # This is the interface for specifying fault code and string for XmlRpcError
@@ -220,7 +220,7 @@ class TypedMapplyViewMapper(MapplyViewMapper):
         return super().mapply(fn, args, kwargs)
 
 
-@view_config(route_name="pypi", context=Exception, renderer="xmlrpc")
+@view_config(route_name="xmlrpc.pypi", context=Exception, renderer="xmlrpc")
 def exception_view(exc, request):
     return _exception_view(exc, request)
 
@@ -280,7 +280,7 @@ def search(request, spec: Mapping[str, Union[str, List[str]]], operator: str = "
         for item in value:
             kw = {"query": item}
             if field in SEARCH_BOOSTS:
-                kw["boost"] = SEARCH_BOOSTS[field]
+                kw["boost"] = SEARCH_BOOSTS[field]  # type: ignore
             if q is None:
                 q = Q("match", **{field: kw})
             else:
@@ -429,7 +429,10 @@ def release_data(request, package_name: str, version: str):
         "docs_url": _clean_for_xml(release.project.documentation_url),
         "home_page": _clean_for_xml(release.home_page),
         "download_url": _clean_for_xml(release.download_url),
-        "project_url": [_clean_for_xml(url) for url in release.project_urls],
+        "project_url": [
+            _clean_for_xml(f"{label}, {url}")
+            for label, url in release.project_urls.items()
+        ],
         "author": _clean_for_xml(release.author),
         "author_email": _clean_for_xml(release.author_email),
         "maintainer": _clean_for_xml(release.maintainer),
@@ -547,10 +550,10 @@ def changelog_since_serial(request, serial: int):
 
 @xmlrpc_method(method="changelog")
 def changelog(request, since: int, with_ids: bool = False):
-    since = datetime.datetime.utcfromtimestamp(since)
+    since_dt = datetime.datetime.utcfromtimestamp(since)
     entries = (
         request.db.query(JournalEntry)
-        .filter(JournalEntry.submitted_date > since)
+        .filter(JournalEntry.submitted_date > since_dt)
         .order_by(JournalEntry.id)
         .limit(50000)
     )

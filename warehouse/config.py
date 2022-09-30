@@ -15,6 +15,7 @@ import enum
 import os
 import shlex
 
+import orjson
 import transaction
 
 from pyramid import renderers
@@ -26,7 +27,7 @@ from pyramid_rpc.xmlrpc import XMLRPCRenderer
 
 from warehouse.errors import BasicAuthBreachedPassword, BasicAuthFailedPassword
 from warehouse.utils.static import ManifestCacheBuster
-from warehouse.utils.wsgi import HostRewrite, ProxyFixer, VhmRootRemover
+from warehouse.utils.wsgi import ProxyFixer, VhmRootRemover
 
 
 class Environment(enum.Enum):
@@ -175,6 +176,7 @@ def configure(settings=None):
         default="https://api.github.com/meta/public_keys/token_scanning",
     )
     maybe_set(settings, "warehouse.trending_table", "WAREHOUSE_TRENDING_TABLE")
+    maybe_set(settings, "warehouse.downloads_table", "WAREHOUSE_DOWNLOADS_TABLE")
     maybe_set(settings, "celery.broker_url", "BROKER_URL")
     maybe_set(settings, "celery.result_url", "REDIS_URL")
     maybe_set(settings, "celery.scheduler_url", "REDIS_URL")
@@ -225,6 +227,14 @@ def configure(settings=None):
         coercer=int,
         default=21600,  # 6 hours
     )
+    maybe_set_compound(settings, "billing", "backend", "BILLING_BACKEND")
+    maybe_set(settings, "tuf.url", "TUF_URL")
+    maybe_set(settings, "tuf.root.secret", "TUF_ROOT_SECRET")
+    maybe_set(settings, "tuf.snapshot.secret", "TUF_SNAPSHOT_SECRET")
+    maybe_set(settings, "tuf.targets.secret", "TUF_TARGETS_SECRET")
+    maybe_set(settings, "tuf.timestamp.secret", "TUF_TIMESTAMP_SECRET")
+    maybe_set(settings, "tuf.bins.secret", "TUF_BINS_SECRET")
+    maybe_set(settings, "tuf.bin-n.secret", "TUF_BIN_N_SECRET")
     maybe_set_compound(settings, "files", "backend", "FILES_BACKEND")
     maybe_set_compound(settings, "simple", "backend", "SIMPLE_BACKEND")
     maybe_set_compound(settings, "docs", "backend", "DOCS_BACKEND")
@@ -234,6 +244,9 @@ def configure(settings=None):
     maybe_set_compound(settings, "metrics", "backend", "METRICS_BACKEND")
     maybe_set_compound(settings, "breached_passwords", "backend", "BREACHED_PASSWORDS")
     maybe_set_compound(settings, "malware_check", "backend", "MALWARE_CHECK_BACKEND")
+    maybe_set_compound(settings, "tuf", "key_backend", "TUF_KEY_BACKEND")
+    maybe_set_compound(settings, "tuf", "storage_backend", "TUF_STORAGE_BACKEND")
+    maybe_set_compound(settings, "tuf", "repository_backend", "TUF_REPOSITORY_BACKEND")
 
     # Pythondotorg integration settings
     maybe_set(settings, "pythondotorg.host", "PYTHONDOTORG_HOST", default="python.org")
@@ -266,9 +279,27 @@ def configure(settings=None):
     )
     maybe_set(
         settings,
+        "warehouse.account.verify_email_ratelimit_string",
+        "VERIFY_EMAIL_RATELIMIT_STRING",
+        default="3 per 6 hours",
+    )
+    maybe_set(
+        settings,
         "warehouse.account.password_reset_ratelimit_string",
         "PASSWORD_RESET_RATELIMIT_STRING",
         default="5 per day",
+    )
+    maybe_set(
+        settings,
+        "warehouse.manage.oidc.user_registration_ratelimit_string",
+        "USER_OIDC_REGISTRATION_RATELIMIT_STRING",
+        default="20 per day",
+    )
+    maybe_set(
+        settings,
+        "warehouse.manage.oidc.ip_registration_ratelimit_string",
+        "IP_OIDC_REGISTRATION_RATELIMIT_STRING",
+        default="20 per day",
     )
 
     # 2FA feature flags
@@ -290,6 +321,22 @@ def configure(settings=None):
         settings,
         "warehouse.two_factor_mandate.enabled",
         "TWOFACTORMANDATE_ENABLED",
+        coercer=distutils.util.strtobool,
+        default=False,
+    )
+    maybe_set(
+        settings,
+        "warehouse.two_factor_mandate.cohort_size",
+        "TWOFACTORMANDATE_COHORTSIZE",
+        coercer=int,
+        default=0,
+    )
+
+    # OIDC feature flags
+    maybe_set(
+        settings,
+        "warehouse.oidc.enabled",
+        "OIDC_ENABLED",
         coercer=distutils.util.strtobool,
         default=False,
     )
@@ -320,6 +367,10 @@ def configure(settings=None):
                 ]
             ],
         )
+
+        # For development only: this artificially prolongs the expirations of any
+        # Warehouse-generated TUF metadata by approximately one year.
+        settings.setdefault("tuf.development_metadata_expiry", 31536000)
 
     # Actually setup our Pyramid Configurator with the values pulled in from
     # the environment as well as the ones passed in to the configure function.
@@ -389,6 +440,9 @@ def configure(settings=None):
     filters.setdefault("format_package_type", "warehouse.filters:format_package_type")
     filters.setdefault("parse_version", "warehouse.filters:parse_version")
     filters.setdefault("localize_datetime", "warehouse.filters:localize_datetime")
+    filters.setdefault("is_recent", "warehouse.filters:is_recent")
+    filters.setdefault("canonicalize_name", "packaging.utils:canonicalize_name")
+    filters.setdefault("format_author_email", "warehouse.filters:format_author_email")
 
     # We also want to register some global functions for Jinja
     jglobals = config.get_settings().setdefault("jinja2.globals", {})
@@ -398,8 +452,22 @@ def configure(settings=None):
     jglobals.setdefault("now", "warehouse.utils:now")
 
     # And some enums to reuse in the templates
+    jglobals.setdefault("AdminFlagValue", "warehouse.admin.flags:AdminFlagValue")
+    jglobals.setdefault(
+        "OrganizationInvitationStatus",
+        "warehouse.organizations.models:OrganizationInvitationStatus",
+    )
+    jglobals.setdefault(
+        "OrganizationRoleType", "warehouse.organizations.models:OrganizationRoleType"
+    )
+    jglobals.setdefault(
+        "OrganizationType", "warehouse.organizations.models:OrganizationType"
+    )
     jglobals.setdefault(
         "RoleInvitationStatus", "warehouse.packaging.models:RoleInvitationStatus"
+    )
+    jglobals.setdefault(
+        "TeamProjectRoleType", "warehouse.organizations.models:TeamProjectRoleType"
     )
 
     # We'll store all of our templates in one location, warehouse/templates
@@ -410,7 +478,13 @@ def configure(settings=None):
 
     # We want to configure our JSON renderer to sort the keys, and also to use
     # an ultra compact serialization format.
-    config.add_renderer("json", renderers.JSON(sort_keys=True, separators=(",", ":")))
+    config.add_renderer(
+        "json",
+        renderers.JSON(
+            serializer=orjson.dumps,
+            option=orjson.OPT_SORT_KEYS | orjson.OPT_APPEND_NEWLINE,
+        ),
+    )
 
     # Configure retry support.
     config.add_settings({"retry.attempts": 3})
@@ -496,8 +570,17 @@ def configure(settings=None):
     # Register logged-in views
     config.include(".manage")
 
+    # Register our organization support.
+    config.include(".organizations")
+
+    # Register our subscription support.
+    config.include(".subscriptions")
+
     # Allow the packaging app to register any services it has.
     config.include(".packaging")
+
+    # Register TUF support for package integrity
+    config.include(".tuf")
 
     # Configure redirection support
     config.include(".redirects")
@@ -567,10 +650,6 @@ def configure(settings=None):
 
     # Protect against cache poisoning via the X-Vhm-Root headers.
     config.add_wsgi_middleware(VhmRootRemover)
-
-    # Fix our host header when getting sent upload.pypi.io as a HOST.
-    # TODO: Remove this, this is at the wrong layer.
-    config.add_wsgi_middleware(HostRewrite)
 
     # We want Sentry to be the last things we add here so that it's the outer
     # most WSGI middleware.

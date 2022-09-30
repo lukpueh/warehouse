@@ -63,7 +63,8 @@ def email_list(request):
             else:
                 filters.append(EmailMessage.to.ilike(term))
 
-        email_query = email_query.filter(or_(*filters))
+        filters = filters or [True]
+        email_query = email_query.filter(or_(False, *filters))
 
     emails = SQLAlchemyORMPage(
         email_query,
@@ -102,7 +103,6 @@ def email_mass(request):
                     {
                         "tag": "account:email:sent",
                         "user_id": user.id,
-                        "ip_address": request.remote_addr,
                         "additional": {
                             "from_": request.registry.settings.get("mail.sender"),
                             "to": email.email,

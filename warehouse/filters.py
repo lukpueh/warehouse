@@ -12,11 +12,14 @@
 
 import binascii
 import collections
+import datetime
 import enum
 import hmac
 import json
 import re
 import urllib.parse
+
+from email.utils import getaddresses
 
 import html5lib
 import html5lib.serializer
@@ -154,6 +157,26 @@ def parse_version(version_str):
 
 def localize_datetime(timestamp):
     return pytz.utc.localize(timestamp)
+
+
+def is_recent(timestamp):
+    if timestamp:
+        return timestamp + datetime.timedelta(days=30) > datetime.datetime.now()
+    return False
+
+
+def format_author_email(metadata_email: str) -> tuple[str, str]:
+    """
+    Return the name and email address from a metadata RFC-822 string.
+    Use Jinja's `first` and `last` to access each part in a template.
+    TODO: Support more than one email address, per RFC-822.
+    """
+    author_emails = []
+    for author_name, author_email in getaddresses([metadata_email]):
+        if "@" not in author_email:
+            return author_name, ""
+        author_emails.append((author_name, author_email))
+    return author_emails[0][0], author_emails[0][1]
 
 
 def includeme(config):

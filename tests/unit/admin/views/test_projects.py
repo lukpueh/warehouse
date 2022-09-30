@@ -40,7 +40,7 @@ class TestProjectList:
         )
         result = views.project_list(db_request)
 
-        assert result == {"projects": projects[:25], "query": None}
+        assert result == {"projects": projects[:25], "query": None, "exact_match": None}
 
     def test_with_page(self, db_request):
         projects = sorted(
@@ -50,7 +50,7 @@ class TestProjectList:
         db_request.GET["page"] = "2"
         result = views.project_list(db_request)
 
-        assert result == {"projects": projects[25:], "query": None}
+        assert result == {"projects": projects[25:], "query": None, "exact_match": None}
 
     def test_with_invalid_page(self):
         request = pretend.stub(params={"page": "not an integer"})
@@ -65,18 +65,10 @@ class TestProjectList:
         db_request.GET["q"] = projects[0].name
         result = views.project_list(db_request)
 
-        assert result == {"projects": [projects[0]], "query": projects[0].name}
-
-    def test_wildcard_query(self, db_request):
-        projects = sorted(
-            [ProjectFactory.create() for _ in range(5)], key=lambda p: p.normalized_name
-        )
-        db_request.GET["q"] = projects[0].name[:-1] + "%"
-        result = views.project_list(db_request)
-
         assert result == {
             "projects": [projects[0]],
-            "query": projects[0].name[:-1] + "%",
+            "query": projects[0].name,
+            "exact_match": None,
         }
 
 
@@ -448,7 +440,7 @@ class TestProjectSetLimit:
 
 class TestDeleteProject:
     def test_no_confirm(self):
-        project = pretend.stub(normalized_name="foo")
+        project = pretend.stub(name="foo", normalized_name="foo")
         request = pretend.stub(
             POST={},
             session=pretend.stub(flash=pretend.call_recorder(lambda *a, **kw: None)),
@@ -465,7 +457,7 @@ class TestDeleteProject:
         ]
 
     def test_wrong_confirm(self):
-        project = pretend.stub(normalized_name="foo")
+        project = pretend.stub(name="foo", normalized_name="foo")
         request = pretend.stub(
             POST={"confirm_project_name": "bar"},
             session=pretend.stub(flash=pretend.call_recorder(lambda *a, **kw: None)),
@@ -493,7 +485,7 @@ class TestDeleteProject:
         db_request.session = pretend.stub(
             flash=pretend.call_recorder(lambda *a, **kw: None)
         )
-        db_request.POST["confirm_project_name"] = project.normalized_name
+        db_request.POST["confirm_project_name"] = project.name
         db_request.user = UserFactory.create()
 
         views.delete_project(project, db_request)

@@ -13,10 +13,18 @@
 import base64
 import io
 
+from urllib.parse import urljoin
+
 import pyqrcode
 
 from paginate_sqlalchemy import SqlalchemyOrmPage as SQLAlchemyORMPage
-from pyramid.httpexceptions import HTTPBadRequest, HTTPNotFound, HTTPSeeOther
+from pyramid.httpexceptions import (
+    HTTPBadRequest,
+    HTTPException,
+    HTTPNotFound,
+    HTTPSeeOther,
+    HTTPTooManyRequests,
+)
 from pyramid.response import Response
 from pyramid.view import view_config, view_defaults
 from sqlalchemy import func
@@ -38,72 +46,209 @@ from warehouse.accounts.views import logout
 from warehouse.admin.flags import AdminFlagValue
 from warehouse.email import (
     send_account_deletion_email,
+    send_added_as_collaborator_email,
+    send_added_as_team_collaborator_email,
+    send_added_as_team_member_email,
+    send_admin_new_organization_requested_email,
+    send_admin_organization_deleted_email,
+    send_admin_organization_renamed_email,
+    send_canceled_as_invited_organization_member_email,
+    send_collaborator_added_email,
     send_collaborator_removed_email,
     send_collaborator_role_changed_email,
     send_email_verification_email,
+    send_new_organization_requested_email,
+    send_oidc_provider_added_email,
+    send_oidc_provider_removed_email,
+    send_organization_deleted_email,
+    send_organization_member_invite_canceled_email,
+    send_organization_member_invited_email,
+    send_organization_member_removed_email,
+    send_organization_member_role_changed_email,
+    send_organization_project_added_email,
+    send_organization_project_removed_email,
+    send_organization_renamed_email,
+    send_organization_role_verification_email,
     send_password_change_email,
     send_primary_email_change_email,
     send_project_role_verification_email,
     send_recovery_codes_generated_email,
     send_removed_as_collaborator_email,
+    send_removed_as_organization_member_email,
+    send_removed_as_team_collaborator_email,
+    send_removed_as_team_member_email,
     send_removed_project_email,
     send_removed_project_release_email,
     send_removed_project_release_file_email,
     send_role_changed_as_collaborator_email,
+    send_role_changed_as_organization_member_email,
+    send_role_changed_as_team_collaborator_email,
+    send_team_collaborator_added_email,
+    send_team_collaborator_removed_email,
+    send_team_collaborator_role_changed_email,
+    send_team_created_email,
+    send_team_deleted_email,
+    send_team_member_added_email,
+    send_team_member_removed_email,
     send_two_factor_added_email,
     send_two_factor_removed_email,
     send_unyanked_project_release_email,
     send_yanked_project_release_email,
 )
 from warehouse.forklift.legacy import MAX_FILESIZE, MAX_PROJECT_SIZE
+from warehouse.macaroons import caveats
 from warehouse.macaroons.interfaces import IMacaroonService
 from warehouse.manage.forms import (
     AddEmailForm,
+    AddOrganizationProjectForm,
+    ChangeOrganizationRoleForm,
     ChangePasswordForm,
     ChangeRoleForm,
+    ChangeTeamProjectRoleForm,
     ConfirmPasswordForm,
+    CreateInternalRoleForm,
     CreateMacaroonForm,
+    CreateOrganizationForm,
+    CreateOrganizationRoleForm,
     CreateRoleForm,
+    CreateTeamForm,
+    CreateTeamRoleForm,
     DeleteMacaroonForm,
     DeleteTOTPForm,
     DeleteWebAuthnForm,
     ProvisionTOTPForm,
     ProvisionWebAuthnForm,
     SaveAccountForm,
+    SaveOrganizationForm,
+    SaveOrganizationNameForm,
+    SaveTeamForm,
     Toggle2FARequirementForm,
+    TransferOrganizationProjectForm,
+)
+from warehouse.metrics.interfaces import IMetricsService
+from warehouse.oidc.forms import DeleteProviderForm, GitHubProviderForm
+from warehouse.oidc.interfaces import TooManyOIDCRegistrations
+from warehouse.oidc.models import GitHubProvider, OIDCProvider
+from warehouse.organizations.interfaces import IOrganizationService
+from warehouse.organizations.models import (
+    Organization,
+    OrganizationInvitationStatus,
+    OrganizationRole,
+    OrganizationRoleType,
+    OrganizationType,
+    Team,
+    TeamProjectRole,
+    TeamProjectRoleType,
+    TeamRole,
+    TeamRoleType,
 )
 from warehouse.packaging.models import (
     File,
     JournalEntry,
     Project,
-    ProjectEvent,
+    ProjectFactory,
     Release,
     Role,
     RoleInvitation,
     RoleInvitationStatus,
 )
+from warehouse.rate_limiting import IRateLimiter
+from warehouse.subscriptions.interfaces import IBillingService, ISubscriptionService
+from warehouse.subscriptions.services import MockStripeBillingService
 from warehouse.utils.http import is_safe_url
+from warehouse.utils.organization import confirm_organization, confirm_team
 from warehouse.utils.paginate import paginate_url_factory
-from warehouse.utils.project import confirm_project, destroy_docs, remove_project
+from warehouse.utils.project import (
+    add_project,
+    confirm_project,
+    destroy_docs,
+    remove_project,
+    validate_project_name,
+)
 
 
 def user_projects(request):
     """Return all the projects for which the user is a sole owner"""
     projects_owned = (
-        request.db.query(Project.id)
+        request.db.query(Project.id.label("id"))
         .join(Role.project)
         .filter(Role.role_name == "Owner", Role.user == request.user)
-        .subquery()
+    )
+
+    projects_collaborator = (
+        request.db.query(Project.id)
+        .join(Role.project)
+        .filter(Role.user == request.user)
     )
 
     with_sole_owner = (
+        # Select projects having just one owner.
         request.db.query(Role.project_id)
-        .join(projects_owned)
+        .join(projects_owned.subquery())
         .filter(Role.role_name == "Owner")
         .group_by(Role.project_id)
         .having(func.count(Role.project_id) == 1)
-        .subquery()
+        # Except projects owned by an organization.
+        .join(Role.project)
+        .filter(~Project.organization.has())
     )
+
+    if not request.flags.enabled(AdminFlagValue.DISABLE_ORGANIZATIONS):
+        organizations_owned = (
+            request.db.query(Organization.id)
+            .join(OrganizationRole.organization)
+            .filter(
+                OrganizationRole.role_name == OrganizationRoleType.Owner,
+                OrganizationRole.user == request.user,
+            )
+            .subquery()
+        )
+
+        organizations_with_sole_owner = (
+            request.db.query(OrganizationRole.organization_id)
+            .join(organizations_owned)
+            .filter(OrganizationRole.role_name == "Owner")
+            .group_by(OrganizationRole.organization_id)
+            .having(func.count(OrganizationRole.organization_id) == 1)
+            .subquery()
+        )
+
+        teams = (
+            request.db.query(Team.id)
+            .join(TeamRole.team)
+            .filter(TeamRole.user == request.user)
+            .subquery()
+        )
+
+        projects_owned = projects_owned.union(
+            request.db.query(Project.id.label("id"))
+            .join(Organization.projects)
+            .join(organizations_owned, Organization.id == organizations_owned.c.id),
+            request.db.query(Project.id.label("id"))
+            .join(TeamProjectRole.project)
+            .join(teams, TeamProjectRole.team_id == teams.c.id)
+            .filter(TeamProjectRole.role_name == TeamProjectRoleType.Owner),
+        )
+
+        with_sole_owner = with_sole_owner.union(
+            # Select projects where organization has only one owner.
+            request.db.query(Project.id)
+            .join(Organization.projects)
+            .join(
+                organizations_with_sole_owner,
+                Organization.id == organizations_with_sole_owner.c.organization_id,
+            )
+            # Except projects with any other individual owners.
+            .filter(
+                ~Project.roles.any(
+                    (Role.role_name == "Owner") & (Role.user_id != request.user.id)
+                )
+            )
+        )
+
+    projects_owned = projects_owned.subquery()
+    projects_collaborator = projects_collaborator.subquery()
+    with_sole_owner = with_sole_owner.subquery()
 
     return {
         "projects_owned": (
@@ -117,12 +262,17 @@ def user_projects(request):
         ),
         "projects_requiring_2fa": (
             request.db.query(Project)
-            .join(projects_owned, Project.id == projects_owned.c.id)
+            .join(projects_collaborator, Project.id == projects_collaborator.c.id)
             .filter(Project.two_factor_required)
             .order_by(Project.name)
             .all()
         ),
     }
+
+
+def project_owners(request, project):
+    """Return all users who are owners of the project."""
+    return project.owners
 
 
 @view_defaults(
@@ -186,6 +336,7 @@ class ManageAccountViews:
             for email in self.request.user.emails:
                 email.public = email.email == public_email
             self.request.session.flash("Account details updated", queue="success")
+            return HTTPSeeOther(self.request.path)
 
         return {**self.default_response, "save_account_form": form}
 
@@ -219,7 +370,7 @@ class ManageAccountViews:
                 ),
                 queue="success",
             )
-            return self.default_response
+            return HTTPSeeOther(self.request.path)
 
         return {**self.default_response, "add_email_form": form}
 
@@ -254,6 +405,8 @@ class ManageAccountViews:
             self.request.session.flash(
                 f"Email address {email.email} removed", queue="success"
             )
+            return HTTPSeeOther(self.request.path)
+
         return self.default_response
 
     @view_config(
@@ -299,7 +452,8 @@ class ManageAccountViews:
             send_primary_email_change_email(
                 self.request, (self.request.user, previous_primary_email)
             )
-        return self.default_response
+
+        return HTTPSeeOther(self.request.path)
 
     @view_config(request_method="POST", request_param=["reverify_email_id"])
     def reverify_email(self):
@@ -319,18 +473,32 @@ class ManageAccountViews:
         if email.verified:
             self.request.session.flash("Email is already verified", queue="error")
         else:
-            send_email_verification_email(self.request, (self.request.user, email))
-            email.user.record_event(
-                tag="account:email:reverify",
-                ip_address=self.request.remote_addr,
-                additional={"email": email.email},
+            verify_email_ratelimit = self.request.find_service(
+                IRateLimiter, name="email.verify"
             )
+            if verify_email_ratelimit.test(self.request.user.id):
+                send_email_verification_email(self.request, (self.request.user, email))
+                verify_email_ratelimit.hit(self.request.user.id)
+                email.user.record_event(
+                    tag="account:email:reverify",
+                    ip_address=self.request.remote_addr,
+                    additional={"email": email.email},
+                )
 
-            self.request.session.flash(
-                f"Verification email for {email.email} resent", queue="success"
-            )
+                self.request.session.flash(
+                    f"Verification email for {email.email} resent", queue="success"
+                )
+            else:
+                self.request.session.flash(
+                    (
+                        "Too many incomplete attempts to verify email address(es) for "
+                        f"{self.request.user.username}. Complete a pending "
+                        "verification or wait before attempting again."
+                    ),
+                    queue="error",
+                )
 
-        return self.default_response
+        return HTTPSeeOther(self.request.path)
 
     @view_config(request_method="POST", request_param=ChangePasswordForm.__params__)
     def change_password(self):
@@ -354,7 +522,13 @@ class ManageAccountViews:
                 tag="account:password:change",
             )
             send_password_change_email(self.request, self.request.user)
+            self.request.db.flush()  # Ensure changes are persisted to DB
+            self.request.db.refresh(self.request.user)  # Pickup new password_date
+            self.request.session.record_password_timestamp(
+                self.user_service.get_password_timestamp(self.request.user.id)
+            )
             self.request.session.flash("Password updated", queue="success")
+            return HTTPSeeOther(self.request.path)
 
         return {**self.default_response, "change_password_form": form}
 
@@ -791,7 +965,7 @@ class ProvisionRecoveryCodesViews:
     require_csrf=True,
     require_methods=False,
     permission="manage:user",
-    renderer="manage/token.html",
+    renderer="manage/account/token.html",
     route_name="manage.account.token",
     has_translations=True,
     require_reauth=True,
@@ -844,19 +1018,40 @@ class ProvisionMacaroonViews:
 
         response = {**self.default_response}
         if form.validate():
-            macaroon_caveats = {"permissions": form.validated_scope, "version": 1}
+            if form.validated_scope == "user":
+                recorded_caveats = [{"permissions": form.validated_scope, "version": 1}]
+                macaroon_caveats = [
+                    caveats.RequestUser(user_id=str(self.request.user.id))
+                ]
+            else:
+                project_ids = [
+                    str(project.id)
+                    for project in self.request.user.projects
+                    if project.normalized_name in form.validated_scope["projects"]
+                ]
+                recorded_caveats = [
+                    {"permissions": form.validated_scope, "version": 1},
+                    {"project_ids": project_ids},
+                ]
+                macaroon_caveats = [
+                    caveats.ProjectName(
+                        normalized_names=form.validated_scope["projects"]
+                    ),
+                    caveats.ProjectID(project_ids=project_ids),
+                ]
+
             serialized_macaroon, macaroon = self.macaroon_service.create_macaroon(
                 location=self.request.domain,
                 user_id=self.request.user.id,
                 description=form.description.data,
-                caveats=macaroon_caveats,
+                scopes=macaroon_caveats,
             )
             self.user_service.record_event(
                 self.request.user.id,
                 tag="account:api_token:added",
                 additional={
                     "description": form.description.data,
-                    "caveats": macaroon_caveats,
+                    "caveats": recorded_caveats,
                 },
             )
             if "projects" in form.validated_scope:
@@ -879,6 +1074,7 @@ class ProvisionMacaroonViews:
                         },
                     )
 
+            # This is an exception to our pattern of redirecting POST to GET.
             response.update(serialized_macaroon=serialized_macaroon, macaroon=macaroon)
 
         return {**response, "create_macaroon_form": form}
@@ -906,12 +1102,12 @@ class ProvisionMacaroonViews:
                 tag="account:api_token:removed",
                 additional={"macaroon_id": form.macaroon_id.data},
             )
-            if "projects" in macaroon.caveats["permissions"]:
+            if "projects" in macaroon.permissions_caveat:
                 projects = [
                     project
                     for project in self.request.user.projects
                     if project.normalized_name
-                    in macaroon.caveats["permissions"]["projects"]
+                    in macaroon.permissions_caveat["projects"]
                 ]
                 for project in projects:
                     project.record_event(
@@ -934,6 +1130,1567 @@ class ProvisionMacaroonViews:
         return HTTPSeeOther(redirect_to)
 
 
+def user_organizations(request):
+    """Return all the organizations for which the user has a privileged role."""
+    organizations_managed = (
+        request.db.query(Organization.id)
+        .join(OrganizationRole.organization)
+        .filter(
+            OrganizationRole.role_name == OrganizationRoleType.Manager,
+            OrganizationRole.user == request.user,
+        )
+        .subquery()
+    )
+    organizations_owned = (
+        request.db.query(Organization.id)
+        .join(OrganizationRole.organization)
+        .filter(
+            OrganizationRole.role_name == OrganizationRoleType.Owner,
+            OrganizationRole.user == request.user,
+        )
+        .subquery()
+    )
+    organizations_billing = (
+        request.db.query(Organization.id)
+        .join(OrganizationRole.organization)
+        .filter(
+            OrganizationRole.role_name == OrganizationRoleType.BillingManager,
+            OrganizationRole.user == request.user,
+        )
+        .subquery()
+    )
+    return {
+        "organizations_owned": (
+            request.db.query(Organization)
+            .join(organizations_owned, Organization.id == organizations_owned.c.id)
+            .order_by(Organization.name)
+            .all()
+        ),
+        "organizations_managed": (
+            request.db.query(Organization)
+            .join(organizations_managed, Organization.id == organizations_managed.c.id)
+            .order_by(Organization.name)
+            .all()
+        ),
+        "organizations_billing": (
+            request.db.query(Organization)
+            .join(organizations_billing, Organization.id == organizations_billing.c.id)
+            .order_by(Organization.name)
+            .all()
+        ),
+    }
+
+
+def organization_owners(request, organization):
+    """Return all users who are owners of the organization."""
+    owner_roles = (
+        request.db.query(User.id)
+        .join(OrganizationRole.user)
+        .filter(
+            OrganizationRole.role_name == OrganizationRoleType.Owner,
+            OrganizationRole.organization == organization,
+        )
+        .subquery()
+    )
+    return request.db.query(User).join(owner_roles, User.id == owner_roles.c.id).all()
+
+
+def organization_managers(request, organization):
+    """Return all users who are managers of the organization."""
+    manager_roles = (
+        request.db.query(User.id)
+        .join(OrganizationRole.user)
+        .filter(
+            OrganizationRole.role_name == OrganizationRoleType.Manager,
+            OrganizationRole.organization == organization,
+        )
+        .subquery()
+    )
+    return (
+        request.db.query(User).join(manager_roles, User.id == manager_roles.c.id).all()
+    )
+
+
+def organization_members(request, organization):
+    """Return all users who are members of the organization."""
+    member_roles = (
+        request.db.query(User.id)
+        .join(OrganizationRole.user)
+        .filter(
+            OrganizationRole.role_name == OrganizationRoleType.Member,
+            OrganizationRole.organization == organization,
+        )
+        .subquery()
+    )
+    return request.db.query(User).join(member_roles, User.id == member_roles.c.id).all()
+
+
+@view_defaults(
+    route_name="manage.organizations",
+    renderer="manage/organizations.html",
+    uses_session=True,
+    require_active_organization=False,  # Allow list/create orgs without active org.
+    require_csrf=True,
+    require_methods=False,
+    permission="manage:user",
+    has_translations=True,
+)
+class ManageOrganizationsViews:
+    def __init__(self, request):
+        self.request = request
+        self.user_service = request.find_service(IUserService, context=None)
+        self.organization_service = request.find_service(
+            IOrganizationService, context=None
+        )
+
+    @property
+    def default_response(self):
+        all_user_organizations = user_organizations(self.request)
+
+        # Get list of invites as (organization, token) tuples.
+        organization_invites = (
+            self.organization_service.get_organization_invites_by_user(
+                self.request.user.id
+            )
+        )
+        organization_invites = [
+            (organization_invite.organization, organization_invite.token)
+            for organization_invite in organization_invites
+        ]
+
+        # Get list of organizations that are approved (True) or pending (None).
+        organizations = self.organization_service.get_organizations_by_user(
+            self.request.user.id
+        )
+        organizations = [
+            organization
+            for organization in organizations
+            if organization.is_approved is not False
+        ]
+
+        return {
+            "organization_invites": organization_invites,
+            "organizations": organizations,
+            "organizations_managed": list(
+                organization.name
+                for organization in all_user_organizations["organizations_managed"]
+            ),
+            "organizations_owned": list(
+                organization.name
+                for organization in all_user_organizations["organizations_owned"]
+            ),
+            "organizations_billing": list(
+                organization.name
+                for organization in all_user_organizations["organizations_billing"]
+            ),
+            "create_organization_form": CreateOrganizationForm(
+                organization_service=self.organization_service,
+            ),
+        }
+
+    @view_config(request_method="GET")
+    def manage_organizations(self):
+        # Organizations must be enabled.
+        if self.request.flags.enabled(AdminFlagValue.DISABLE_ORGANIZATIONS):
+            raise HTTPNotFound()
+
+        return self.default_response
+
+    @view_config(request_method="POST", request_param=CreateOrganizationForm.__params__)
+    def create_organization(self):
+        # Organizations must be enabled.
+        if self.request.flags.enabled(AdminFlagValue.DISABLE_ORGANIZATIONS):
+            raise HTTPNotFound()
+
+        form = CreateOrganizationForm(
+            self.request.POST,
+            organization_service=self.organization_service,
+        )
+
+        if form.validate():
+            data = form.data
+            organization = self.organization_service.add_organization(**data)
+            self.organization_service.record_event(
+                organization.id,
+                tag="organization:create",
+                additional={"created_by_user_id": str(self.request.user.id)},
+            )
+            self.organization_service.add_catalog_entry(organization.id)
+            self.organization_service.record_event(
+                organization.id,
+                tag="organization:catalog_entry:add",
+                additional={"submitted_by_user_id": str(self.request.user.id)},
+            )
+            self.organization_service.add_organization_role(
+                organization.id,
+                self.request.user.id,
+                OrganizationRoleType.Owner,
+            )
+            self.organization_service.record_event(
+                organization.id,
+                tag="organization:organization_role:invite",
+                additional={
+                    "submitted_by_user_id": str(self.request.user.id),
+                    "role_name": "Owner",
+                    "target_user_id": str(self.request.user.id),
+                },
+            )
+            self.organization_service.record_event(
+                organization.id,
+                tag="organization:organization_role:accepted",
+                additional={
+                    "submitted_by_user_id": str(self.request.user.id),
+                    "role_name": "Owner",
+                    "target_user_id": str(self.request.user.id),
+                },
+            )
+            self.user_service.record_event(
+                self.request.user.id,
+                tag="account:organization_role:accepted",
+                additional={
+                    "submitted_by_user_id": str(self.request.user.id),
+                    "organization_name": organization.name,
+                    "role_name": "Owner",
+                },
+            )
+            send_admin_new_organization_requested_email(
+                self.request,
+                self.user_service.get_admins(),
+                organization_name=organization.name,
+                initiator_username=self.request.user.username,
+                organization_id=organization.id,
+            )
+            send_new_organization_requested_email(
+                self.request, self.request.user, organization_name=organization.name
+            )
+            self.request.session.flash(
+                "Request for new organization submitted", queue="success"
+            )
+        else:
+            return {"create_organization_form": form}
+
+        if form.orgtype.data == OrganizationType.Company:
+            return HTTPSeeOther(
+                self.request.route_path(
+                    "manage.organization.activate_subscription",
+                    organization_name=organization.normalized_name,
+                )
+            )
+
+        return HTTPSeeOther(self.request.path)
+
+
+@view_defaults(
+    route_name="manage.organization.settings",
+    context=Organization,
+    renderer="manage/organization/settings.html",
+    uses_session=True,
+    require_active_organization=True,
+    require_csrf=True,
+    require_methods=False,
+    permission="manage:organization",
+    has_translations=True,
+    require_reauth=True,
+)
+class ManageOrganizationSettingsViews:
+    def __init__(self, organization, request):
+        self.organization = organization
+        self.request = request
+        self.user_service = request.find_service(IUserService, context=None)
+        self.organization_service = request.find_service(
+            IOrganizationService, context=None
+        )
+        self.billing_service = request.find_service(IBillingService, context=None)
+
+    @property
+    def active_projects(self):
+        return self.organization.projects
+
+    @property
+    def default_response(self):
+        return {
+            "organization": self.organization,
+            "save_organization_form": SaveOrganizationForm(
+                name=self.organization.name,
+                display_name=self.organization.display_name,
+                link_url=self.organization.link_url,
+                description=self.organization.description,
+                orgtype=self.organization.orgtype,
+                organization_service=self.organization_service,
+            ),
+            "save_organization_name_form": SaveOrganizationNameForm(
+                organization_service=self.organization_service,
+            ),
+            "active_projects": self.active_projects,
+        }
+
+    @view_config(request_method="GET", permission="view:organization")
+    def manage_organization(self):
+        return self.default_response
+
+    @view_config(request_method="POST", request_param=SaveOrganizationForm.__params__)
+    def save_organization(self):
+        form = SaveOrganizationForm(
+            self.request.POST,
+            organization_service=self.organization_service,
+        )
+
+        if form.validate():
+            data = form.data
+            self.organization_service.update_organization(self.organization.id, **data)
+            self.request.session.flash("Organization details updated", queue="success")
+            return HTTPSeeOther(self.request.path)
+
+        return {**self.default_response, "save_organization_form": form}
+
+    @view_config(
+        request_method="POST",
+        request_param=["confirm_current_organization_name"]
+        + SaveOrganizationNameForm.__params__,
+    )
+    def save_organization_name(self):
+        confirm_organization(
+            self.organization,
+            self.request,
+            fail_route="manage.organization.settings",
+            field_name="confirm_current_organization_name",
+            error_message="Could not rename organization",
+        )
+
+        form = SaveOrganizationNameForm(
+            self.request.POST,
+            organization_service=self.organization_service,
+            organization_id=self.organization.id,
+        )
+
+        if form.validate():
+            previous_organization_name = self.organization.name
+            self.organization_service.rename_organization(
+                self.organization.id,
+                form.name.data,
+            )
+            self.organization.record_event(
+                tag="organization:rename",
+                ip_address=self.request.remote_addr,
+                additional={
+                    "previous_organization_name": previous_organization_name,
+                    "renamed_by_user_id": str(self.request.user.id),
+                },
+            )
+            owner_users = set(organization_owners(self.request, self.organization))
+            send_admin_organization_renamed_email(
+                self.request,
+                self.user_service.get_admins(),
+                organization_name=self.organization.name,
+                previous_organization_name=previous_organization_name,
+            )
+            send_organization_renamed_email(
+                self.request,
+                owner_users,
+                organization_name=self.organization.name,
+                previous_organization_name=previous_organization_name,
+            )
+            self.request.session.flash(
+                "Organization account name updated", queue="success"
+            )
+            return HTTPSeeOther(
+                self.request.route_path(
+                    "manage.organization.settings",
+                    organization_name=self.organization.normalized_name,
+                )
+                + "#modal-close"
+            )
+
+        return {**self.default_response, "save_organization_name_form": form}
+
+    @view_config(request_method="POST", request_param=["confirm_organization_name"])
+    def delete_organization(self):
+        confirm_organization(
+            self.organization, self.request, fail_route="manage.organization.settings"
+        )
+
+        if self.active_projects:
+            self.request.session.flash(
+                "Cannot delete organization with active project ownerships",
+                queue="error",
+            )
+            return self.default_response
+
+        # Record event before deleting organization.
+        self.organization.record_event(
+            tag="organization:delete",
+            ip_address=self.request.remote_addr,
+            additional={
+                "deleted_by_user_id": str(self.request.user.id),
+            },
+        )
+
+        # Get owners before deleting organization.
+        owner_users = set(organization_owners(self.request, self.organization))
+
+        # Cancel any subscriptions tied to this organization.
+        if self.organization.subscriptions:
+            for subscription in self.organization.subscriptions:
+                self.billing_service.cancel_subscription(subscription.subscription_id)
+
+        self.organization_service.delete_organization(self.organization.id)
+
+        send_admin_organization_deleted_email(
+            self.request,
+            self.user_service.get_admins(),
+            organization_name=self.organization.name,
+        )
+        send_organization_deleted_email(
+            self.request,
+            owner_users,
+            organization_name=self.organization.name,
+        )
+
+        return HTTPSeeOther(self.request.route_path("manage.organizations"))
+
+
+@view_defaults(
+    context=Organization,
+    uses_session=True,
+    require_active_organization=False,  # Allow reactivate billing for inactive org.
+    require_csrf=True,
+    require_methods=False,
+    permission="manage:billing",
+    has_translations=True,
+    require_reauth=True,
+)
+class ManageOrganizationBillingViews:
+    def __init__(self, organization, request):
+        self.organization = organization
+        self.request = request
+        self.billing_service = request.find_service(IBillingService, context=None)
+        self.subscription_service = request.find_service(
+            ISubscriptionService, context=None
+        )
+        self.organization_service = request.find_service(
+            IOrganizationService, context=None
+        )
+
+    @property
+    def customer_id(self):
+        if self.organization.customer is None:
+            customer = self.billing_service.create_customer(
+                name=(
+                    self.request.registry.settings["site.name"]
+                    + " Organization - "
+                    + self.organization.name
+                ),
+                description=self.organization.description,
+            )
+            stripe_customer = self.subscription_service.add_stripe_customer(
+                customer_id=customer["id"],
+            )
+            self.organization_service.add_organization_stripe_customer(
+                organization_id=self.organization.id,
+                stripe_customer_id=stripe_customer.id,
+            )
+            return customer["id"]
+        return self.organization.customer.customer_id
+
+    @property
+    def price_id(self):
+        # Get or create default subscription price with subscription service.
+        default_subscription_price = (
+            self.subscription_service.get_or_create_default_subscription_price()
+        )
+        # Synchronize product and price with billing service.
+        self.billing_service.sync_product(
+            default_subscription_price.subscription_product
+        )
+        self.billing_service.sync_price(default_subscription_price)
+        return default_subscription_price.price_id
+
+    @property
+    def return_url(self):
+        return urljoin(
+            self.request.application_url,
+            self.request.GET.get(
+                "next", self.request.route_path("manage.organizations")
+            ),
+        )
+
+    def create_subscription(self):
+        # Create checkout session.
+        checkout_session = self.billing_service.create_checkout_session(
+            customer_id=self.customer_id,
+            price_ids=[self.price_id],
+            success_url=self.return_url,
+            cancel_url=self.return_url,
+        )
+        create_subscription_url = checkout_session["url"]
+        if isinstance(self.billing_service, MockStripeBillingService):
+            # Use local mock of billing UI.
+            create_subscription_url = self.request.route_path(
+                "mock.billing.checkout-session",
+                organization_name=self.organization.normalized_name,
+            )
+        return HTTPSeeOther(create_subscription_url)
+
+    def manage_subscription(self):
+        portal_session = self.billing_service.create_portal_session(
+            customer_id=self.customer_id,
+            return_url=self.return_url,
+        )
+        manage_subscription_url = portal_session["url"]
+        if isinstance(self.billing_service, MockStripeBillingService):
+            # Use local mock of billing UI.
+            manage_subscription_url = self.request.route_path(
+                "mock.billing.portal-session",
+                organization_name=self.organization.normalized_name,
+            )
+        return HTTPSeeOther(manage_subscription_url)
+
+    @view_config(
+        route_name="manage.organization.activate_subscription",
+        renderer="manage/organization/activate_subscription.html",
+    )
+    def activate_subscription(self):
+        return {"organization": self.organization}
+
+    @view_config(route_name="manage.organization.subscription")
+    def create_or_manage_subscription(self):
+        # Organizations must be enabled.
+        if self.request.flags.enabled(AdminFlagValue.DISABLE_ORGANIZATIONS):
+            raise HTTPNotFound()
+
+        if not self.organization.subscriptions:
+            # Create subscription if there are no existing subscription.
+            return self.create_subscription()
+        else:
+            # Manage subscription if there is an existing subscription.
+            return self.manage_subscription()
+
+
+@view_defaults(
+    route_name="manage.organization.teams",
+    context=Organization,
+    renderer="manage/organization/teams.html",
+    uses_session=True,
+    require_active_organization=True,
+    require_csrf=True,
+    require_methods=False,
+    permission="manage:organization",
+    has_translations=True,
+    require_reauth=True,
+)
+class ManageOrganizationTeamsViews:
+    def __init__(self, organization, request):
+        self.organization = organization
+        self.request = request
+        self.organization_service = request.find_service(
+            IOrganizationService, context=None
+        )
+
+    @property
+    def default_response(self):
+        return {
+            "organization": self.organization,
+            "create_team_form": CreateTeamForm(
+                self.request.POST,
+                organization_service=self.organization_service,
+                organization_id=self.organization.id,
+            ),
+        }
+
+    @view_config(request_method="GET", permission="view:organization")
+    def manage_teams(self):
+        if self.request.flags.enabled(AdminFlagValue.DISABLE_ORGANIZATIONS):
+            raise HTTPNotFound()
+
+        return self.default_response
+
+    @view_config(request_method="POST")
+    def create_team(self):
+        if self.request.flags.enabled(AdminFlagValue.DISABLE_ORGANIZATIONS):
+            raise HTTPNotFound()
+
+        # Get and validate form from default response.
+        default_response = self.default_response
+        form = default_response["create_team_form"]
+        if not form.validate():
+            return default_response
+
+        # Add team to organization.
+        team = self.organization_service.add_team(
+            organization_id=self.organization.id,
+            name=form.name.data,
+        )
+
+        # Record events.
+        self.organization.record_event(
+            tag="organization:team:create",
+            ip_address=self.request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(self.request.user.id),
+                "team_name": team.name,
+            },
+        )
+        team.record_event(
+            tag="team:create",
+            ip_address=self.request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(self.request.user.id),
+            },
+        )
+
+        # Send notification emails.
+        owner_and_manager_users = set(
+            organization_owners(self.request, self.organization)
+            + organization_managers(self.request, self.organization)
+        )
+        send_team_created_email(
+            self.request,
+            owner_and_manager_users,
+            organization_name=self.organization.name,
+            team_name=team.name,
+        )
+
+        # Display notification message.
+        self.request.session.flash(
+            f"Created team {team.name!r} in {self.organization.name!r}",
+            queue="success",
+        )
+
+        # Refresh teams list.
+        return HTTPSeeOther(self.request.path)
+
+
+@view_defaults(
+    route_name="manage.organization.projects",
+    context=Organization,
+    renderer="manage/organization/projects.html",
+    uses_session=True,
+    require_active_organization=True,
+    require_csrf=True,
+    require_methods=False,
+    permission="manage:organization",
+    has_translations=True,
+    require_reauth=True,
+)
+class ManageOrganizationProjectsViews:
+    def __init__(self, organization, request):
+        self.organization = organization
+        self.request = request
+        self.user_service = request.find_service(IUserService, context=None)
+        self.organization_service = request.find_service(
+            IOrganizationService, context=None
+        )
+        self.project_factory = ProjectFactory(request)
+
+    @property
+    def active_projects(self):
+        return self.organization.projects
+
+    @property
+    def default_response(self):
+        active_projects = self.active_projects
+        all_user_projects = user_projects(self.request)
+        projects_owned = set(
+            project.name for project in all_user_projects["projects_owned"]
+        )
+        projects_sole_owned = set(
+            project.name for project in all_user_projects["projects_sole_owned"]
+        )
+        projects_requiring_2fa = set(
+            project.name for project in all_user_projects["projects_requiring_2fa"]
+        )
+        project_choices = set(
+            project.name
+            for project in all_user_projects["projects_owned"]
+            if not project.organization
+        )
+        project_factory = self.project_factory
+
+        return {
+            "organization": self.organization,
+            "active_projects": active_projects,
+            "projects_owned": projects_owned,
+            "projects_sole_owned": projects_sole_owned,
+            "projects_requiring_2fa": projects_requiring_2fa,
+            "add_organization_project_form": AddOrganizationProjectForm(
+                self.request.POST,
+                project_choices=project_choices,
+                project_factory=project_factory,
+            ),
+        }
+
+    @view_config(request_method="GET", permission="view:organization")
+    def manage_organization_projects(self):
+        return self.default_response
+
+    @view_config(request_method="POST", permission="add:project")
+    def add_organization_project(self):
+        # Get and validate form from default response.
+        default_response = self.default_response
+        form = default_response["add_organization_project_form"]
+        if not form.validate():
+            return default_response
+
+        # Get existing project or add new project.
+        if form.add_existing_project.data:
+            # Get existing project.
+            project = self.project_factory[form.existing_project_name.data]
+            # Remove request user as individual project owner.
+            role = (
+                self.request.db.query(Role)
+                .join(User)
+                .filter(
+                    Role.role_name == "Owner",
+                    Role.project == project,
+                    Role.user == self.request.user,
+                )
+                .first()
+            )
+            if role:
+                self.request.db.delete(role)
+                self.request.db.add(
+                    JournalEntry(
+                        name=project.name,
+                        action=f"remove {role.role_name} {role.user.username}",
+                        submitted_by=self.request.user,
+                        submitted_from=self.request.remote_addr,
+                    )
+                )
+                project.record_event(
+                    tag="project:role:delete",
+                    ip_address=self.request.remote_addr,
+                    additional={
+                        "submitted_by": self.request.user.username,
+                        "role_name": role.role_name,
+                        "target_user": role.user.username,
+                    },
+                )
+        else:
+            # Validate new project name.
+            try:
+                validate_project_name(form.new_project_name.data, self.request)
+            except HTTPException as exc:
+                form.new_project_name.errors.append(exc.detail)
+                return default_response
+            # Add new project.
+            project = add_project(form.new_project_name.data, self.request)
+
+        # Add project to organization.
+        self.organization_service.add_organization_project(
+            organization_id=self.organization.id,
+            project_id=project.id,
+        )
+
+        # Record events.
+        self.organization.record_event(
+            tag="organization:organization_project:add",
+            ip_address=self.request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(self.request.user.id),
+                "project_name": project.name,
+            },
+        )
+        project.record_event(
+            tag="project:organization_project:add",
+            ip_address=self.request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(self.request.user.id),
+                "organization_name": self.organization.name,
+            },
+        )
+
+        # Send notification emails.
+        owner_users = set(
+            organization_owners(self.request, self.organization)
+            + project_owners(self.request, project)
+        )
+        send_organization_project_added_email(
+            self.request,
+            owner_users,
+            organization_name=self.organization.name,
+            project_name=project.name,
+        )
+
+        # Display notification message.
+        self.request.session.flash(
+            f"Added the project {project.name!r} to {self.organization.name!r}",
+            queue="success",
+        )
+
+        # Refresh projects list.
+        return HTTPSeeOther(self.request.path)
+
+
+@view_config(
+    route_name="manage.organization.roles",
+    context=Organization,
+    renderer="manage/organization/roles.html",
+    uses_session=True,
+    require_active_organization=True,
+    require_methods=False,
+    permission="view:organization",
+    has_translations=True,
+    require_reauth=True,
+)
+def manage_organization_roles(
+    organization, request, _form_class=CreateOrganizationRoleForm
+):
+    organization_service = request.find_service(IOrganizationService, context=None)
+    user_service = request.find_service(IUserService, context=None)
+    form = _form_class(
+        request.POST,
+        orgtype=organization.orgtype,
+        organization_service=organization_service,
+        user_service=user_service,
+    )
+
+    if request.method == "POST" and form.validate():
+        username = form.username.data
+        role_name = form.role_name.data
+        userid = user_service.find_userid(username)
+        user = user_service.get_user(userid)
+        token_service = request.find_service(ITokenService, name="email")
+
+        existing_role = organization_service.get_organization_role_by_user(
+            organization.id, user.id
+        )
+        organization_invite = organization_service.get_organization_invite_by_user(
+            organization.id, user.id
+        )
+        # Cover edge case where invite is invalid but task
+        # has not updated invite status
+        try:
+            invite_token = token_service.loads(organization_invite.token)
+        except (TokenExpired, AttributeError):
+            invite_token = None
+
+        if existing_role:
+            request.session.flash(
+                request._(
+                    "User '${username}' already has ${role_name} role for organization",
+                    mapping={
+                        "username": username,
+                        "role_name": existing_role.role_name.value,
+                    },
+                ),
+                queue="error",
+            )
+        elif user.primary_email is None or not user.primary_email.verified:
+            request.session.flash(
+                request._(
+                    "User '${username}' does not have a verified primary email "
+                    "address and cannot be added as a ${role_name} for organization",
+                    mapping={"username": username, "role_name": role_name.value},
+                ),
+                queue="error",
+            )
+        elif (
+            organization_invite
+            and organization_invite.invite_status
+            == OrganizationInvitationStatus.Pending
+            and invite_token
+        ):
+            request.session.flash(
+                request._(
+                    "User '${username}' already has an active invite. "
+                    "Please try again later.",
+                    mapping={"username": username},
+                ),
+                queue="error",
+            )
+        else:
+            invite_token = token_service.dumps(
+                {
+                    "action": "email-organization-role-verify",
+                    "desired_role": role_name.value,
+                    "user_id": user.id,
+                    "organization_id": organization.id,
+                    "submitter_id": request.user.id,
+                }
+            )
+            if organization_invite:
+                organization_invite.invite_status = OrganizationInvitationStatus.Pending
+                organization_invite.token = invite_token
+            else:
+                organization_service.add_organization_invite(
+                    organization_id=organization.id,
+                    user_id=user.id,
+                    invite_token=invite_token,
+                )
+            organization.record_event(
+                tag="organization:organization_role:invite",
+                ip_address=request.remote_addr,
+                additional={
+                    "submitted_by_user_id": str(request.user.id),
+                    "role_name": role_name.value,
+                    "target_user_id": str(userid),
+                },
+            )
+            request.db.flush()  # in order to get id
+            owner_users = set(organization_owners(request, organization))
+            send_organization_member_invited_email(
+                request,
+                owner_users,
+                user=user,
+                desired_role=role_name.value,
+                initiator_username=request.user.username,
+                organization_name=organization.name,
+                email_token=invite_token,
+                token_age=token_service.max_age,
+            )
+            send_organization_role_verification_email(
+                request,
+                user,
+                desired_role=role_name.value,
+                initiator_username=request.user.username,
+                organization_name=organization.name,
+                email_token=invite_token,
+                token_age=token_service.max_age,
+            )
+            request.session.flash(
+                request._(
+                    "Invitation sent to '${username}'",
+                    mapping={"username": username},
+                ),
+                queue="success",
+            )
+
+        return HTTPSeeOther(request.path)
+
+    roles = set(organization_service.get_organization_roles(organization.id))
+    invitations = set(organization_service.get_organization_invites(organization.id))
+
+    return {
+        "organization": organization,
+        "roles": roles,
+        "invitations": invitations,
+        "form": form,
+    }
+
+
+@view_config(
+    route_name="manage.organization.revoke_invite",
+    context=Organization,
+    uses_session=True,
+    require_active_organization=True,
+    require_methods=["POST"],
+    permission="manage:organization",
+    has_translations=True,
+)
+def revoke_organization_invitation(organization, request):
+    organization_service = request.find_service(IOrganizationService, context=None)
+    user_service = request.find_service(IUserService, context=None)
+    token_service = request.find_service(ITokenService, name="email")
+    user = user_service.get_user(request.POST["user_id"])
+
+    organization_invite = organization_service.get_organization_invite_by_user(
+        organization.id, user.id
+    )
+    if organization_invite is None:
+        request.session.flash(
+            request._("Could not find organization invitation."), queue="error"
+        )
+        return HTTPSeeOther(
+            request.route_path(
+                "manage.organization.roles",
+                organization_name=organization.normalized_name,
+            )
+        )
+
+    organization_service.delete_organization_invite(organization_invite.id)
+
+    try:
+        token_data = token_service.loads(organization_invite.token)
+    except TokenExpired:
+        request.session.flash(request._("Invitation already expired."), queue="success")
+        return HTTPSeeOther(
+            request.route_path(
+                "manage.organization.roles",
+                organization_name=organization.normalized_name,
+            )
+        )
+    role_name = token_data.get("desired_role")
+
+    organization.record_event(
+        tag="organization:organization_role:revoke_invite",
+        ip_address=request.remote_addr,
+        additional={
+            "submitted_by_user_id": str(request.user.id),
+            "role_name": role_name,
+            "target_user_id": str(user.id),
+        },
+    )
+
+    owner_users = set(organization_owners(request, organization))
+    send_organization_member_invite_canceled_email(
+        request,
+        owner_users,
+        user=user,
+        organization_name=organization.name,
+    )
+    send_canceled_as_invited_organization_member_email(
+        request,
+        user,
+        organization_name=organization.name,
+    )
+
+    request.session.flash(
+        request._(
+            "Invitation revoked from '${username}'.",
+            mapping={"username": user.username},
+        ),
+        queue="success",
+    )
+
+    return HTTPSeeOther(
+        request.route_path(
+            "manage.organization.roles", organization_name=organization.normalized_name
+        )
+    )
+
+
+@view_config(
+    route_name="manage.organization.change_role",
+    context=Organization,
+    uses_session=True,
+    require_active_organization=True,
+    require_methods=["POST"],
+    permission="manage:organization",
+    has_translations=True,
+    require_reauth=True,
+)
+def change_organization_role(
+    organization, request, _form_class=ChangeOrganizationRoleForm
+):
+    form = _form_class(request.POST, orgtype=organization.orgtype)
+
+    if form.validate():
+        organization_service = request.find_service(IOrganizationService, context=None)
+        role_id = request.POST["role_id"]
+        role = organization_service.get_organization_role(role_id)
+        if not role or role.organization_id != organization.id:
+            request.session.flash("Could not find member", queue="error")
+        elif role.role_name == OrganizationRoleType.Owner and role.user == request.user:
+            request.session.flash("Cannot remove yourself as Owner", queue="error")
+        else:
+            role.role_name = form.role_name.data
+
+            owner_users = set(organization_owners(request, organization))
+            # Don't send owner notification email to new user
+            # if they are now an owner
+            owner_users.discard(role.user)
+
+            send_organization_member_role_changed_email(
+                request,
+                owner_users,
+                user=role.user,
+                submitter=request.user,
+                organization_name=organization.name,
+                role=role.role_name.value,
+            )
+
+            send_role_changed_as_organization_member_email(
+                request,
+                role.user,
+                submitter=request.user,
+                organization_name=organization.name,
+                role=role.role_name.value,
+            )
+
+            organization.record_event(
+                tag="organization:organization_role:change",
+                ip_address=request.remote_addr,
+                additional={
+                    "submitted_by_user_id": str(request.user.id),
+                    "role_name": form.role_name.data,
+                    "target_user_id": str(role.user.id),
+                },
+            )
+            role.user.record_event(
+                tag="account:organization_role:change",
+                ip_address=request.remote_addr,
+                additional={
+                    "submitted_by_user_id": str(request.user.id),
+                    "organization_name": organization.name,
+                    "role_name": form.role_name.data,
+                },
+            )
+
+            request.session.flash("Changed role", queue="success")
+
+    return HTTPSeeOther(
+        request.route_path(
+            "manage.organization.roles", organization_name=organization.normalized_name
+        )
+    )
+
+
+@view_config(
+    route_name="manage.organization.delete_role",
+    context=Organization,
+    uses_session=True,
+    require_active_organization=True,
+    require_methods=["POST"],
+    permission="view:organization",
+    has_translations=True,
+    require_reauth=True,
+)
+def delete_organization_role(organization, request):
+    organization_service = request.find_service(IOrganizationService, context=None)
+    role_id = request.POST["role_id"]
+    role = organization_service.get_organization_role(role_id)
+    if not role or role.organization_id != organization.id:
+        request.session.flash("Could not find member", queue="error")
+    elif (
+        not request.has_permission("manage:organization") and role.user != request.user
+    ):
+        request.session.flash(
+            "Cannot remove other people from the organization", queue="error"
+        )
+    elif role.role_name == OrganizationRoleType.Owner and role.user == request.user:
+        request.session.flash("Cannot remove yourself as Owner", queue="error")
+    else:
+        organization_service.delete_organization_role(role.id)
+        organization.record_event(
+            tag="organization:organization_role:delete",
+            ip_address=request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(request.user.id),
+                "role_name": role.role_name.value,
+                "target_user_id": str(role.user.id),
+            },
+        )
+        role.user.record_event(
+            tag="account:organization_role:delete",
+            ip_address=request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(request.user.id),
+                "organization_name": organization.name,
+                "role_name": role.role_name.value,
+            },
+        )
+
+        owner_users = set(organization_owners(request, organization))
+        # Don't send owner notification email to new user
+        # if they are now an owner
+        owner_users.discard(role.user)
+
+        send_organization_member_removed_email(
+            request,
+            owner_users,
+            user=role.user,
+            submitter=request.user,
+            organization_name=organization.name,
+        )
+
+        send_removed_as_organization_member_email(
+            request,
+            role.user,
+            submitter=request.user,
+            organization_name=organization.name,
+        )
+
+        request.session.flash("Removed from organization", queue="success")
+
+    if role and role.user == request.user:
+        # User removed self from organization.
+        return HTTPSeeOther(request.route_path("manage.organizations"))
+    else:
+        return HTTPSeeOther(
+            request.route_path(
+                "manage.organization.roles",
+                organization_name=organization.normalized_name,
+            )
+        )
+
+
+@view_defaults(
+    route_name="manage.team.settings",
+    context=Team,
+    renderer="manage/team/settings.html",
+    uses_session=True,
+    require_active_organization=True,
+    require_csrf=True,
+    require_methods=False,
+    permission="manage:team",
+    has_translations=True,
+    require_reauth=True,
+)
+class ManageTeamSettingsViews:
+    def __init__(self, team, request):
+        self.team = team
+        self.request = request
+        self.user_service = request.find_service(IUserService, context=None)
+        self.organization_service = request.find_service(
+            IOrganizationService, context=None
+        )
+
+    @property
+    def default_response(self):
+        return {
+            "team": self.team,
+            "save_team_form": SaveTeamForm(
+                name=self.team.name,
+                organization_service=self.organization_service,
+                organization_id=self.team.organization_id,
+                team_id=self.team.id,
+            ),
+        }
+
+    @view_config(request_method="GET", permission="view:team")
+    def manage_team(self):
+        return self.default_response
+
+    @view_config(request_method="POST", request_param=SaveTeamForm.__params__)
+    def save_team(self):
+        form = SaveTeamForm(
+            self.request.POST,
+            organization_service=self.organization_service,
+            organization_id=self.team.organization_id,
+            team_id=self.team.id,
+        )
+
+        if form.validate():
+            name = form.name.data
+            self.organization_service.rename_team(self.team.id, name)
+            self.request.session.flash("Team name updated", queue="success")
+            return HTTPSeeOther(
+                self.request.route_path(
+                    "manage.team.settings",
+                    organization_name=self.team.organization.normalized_name,
+                    team_name=self.team.normalized_name,
+                )
+            )
+
+        return {**self.default_response, "save_team_form": form}
+
+    @view_config(request_method="POST", request_param=["confirm_team_name"])
+    def delete_team(self):
+        # Confirm team name.
+        confirm_team(self.team, self.request, fail_route="manage.team.settings")
+
+        # Get organization and team name before deleting team.
+        organization = self.team.organization
+        team_name = self.team.name
+
+        # Record events.
+        organization.record_event(
+            tag="organization:team:delete",
+            ip_address=self.request.remote_addr,
+            additional={
+                "deleted_by_user_id": str(self.request.user.id),
+                "team_name": team_name,
+            },
+        )
+        self.team.record_event(
+            tag="team:delete",
+            ip_address=self.request.remote_addr,
+            additional={
+                "deleted_by_user_id": str(self.request.user.id),
+            },
+        )
+
+        # Delete team.
+        self.organization_service.delete_team(self.team.id)
+
+        # Send notification emails.
+        owner_and_manager_users = set(
+            organization_owners(self.request, organization)
+            + organization_managers(self.request, organization)
+        )
+        send_team_deleted_email(
+            self.request,
+            owner_and_manager_users,
+            organization_name=organization.name,
+            team_name=team_name,
+        )
+
+        # Display notification message.
+        self.request.session.flash("Team deleted", queue="success")
+
+        return HTTPSeeOther(
+            self.request.route_path(
+                "manage.organization.teams",
+                organization_name=organization.normalized_name,
+            )
+        )
+
+
+@view_defaults(
+    route_name="manage.team.projects",
+    context=Team,
+    renderer="manage/team/projects.html",
+    uses_session=True,
+    require_active_organization=True,
+    require_csrf=True,
+    require_methods=False,
+    permission="manage:team",
+    has_translations=True,
+    require_reauth=True,
+)
+class ManageTeamProjectsViews:
+    def __init__(self, team, request):
+        self.team = team
+        self.request = request
+
+    @property
+    def active_projects(self):
+        return self.team.projects
+
+    @property
+    def default_response(self):
+        active_projects = self.active_projects
+        all_user_projects = user_projects(self.request)
+        projects_owned = set(
+            project.name for project in all_user_projects["projects_owned"]
+        )
+        projects_sole_owned = set(
+            project.name for project in all_user_projects["projects_sole_owned"]
+        )
+        projects_requiring_2fa = set(
+            project.name for project in all_user_projects["projects_requiring_2fa"]
+        )
+
+        return {
+            "team": self.team,
+            "active_projects": active_projects,
+            "projects_owned": projects_owned,
+            "projects_sole_owned": projects_sole_owned,
+            "projects_requiring_2fa": projects_requiring_2fa,
+        }
+
+    @view_config(request_method="GET", permission="view:team")
+    def manage_team_projects(self):
+        return self.default_response
+
+
+@view_defaults(
+    route_name="manage.team.roles",
+    context=Team,
+    renderer="manage/team/roles.html",
+    uses_session=True,
+    require_active_organization=True,
+    require_csrf=True,
+    require_methods=False,
+    permission="manage:team",
+    has_translations=True,
+    require_reauth=True,
+)
+class ManageTeamRolesViews:
+    def __init__(self, team, request):
+        self.team = team
+        self.request = request
+        self.organization_service = request.find_service(
+            IOrganizationService, context=None
+        )
+        self.user_service = request.find_service(IUserService, context=None)
+        self.user_choices = sorted(
+            user.username
+            for user in set(
+                organization_owners(self.request, self.team.organization)
+                + organization_managers(self.request, self.team.organization)
+                + organization_members(self.request, self.team.organization)
+            )
+        )
+
+    @property
+    def default_response(self):
+        return {
+            "team": self.team,
+            "roles": self.organization_service.get_team_roles(self.team.id),
+            "form": CreateTeamRoleForm(
+                self.request.POST,
+                user_choices=self.user_choices,
+            ),
+        }
+
+    @view_config(request_method="GET", permission="view:team")
+    def manage_team_roles(self):
+        return self.default_response
+
+    @view_config(request_method="POST")
+    def create_team_role(self):
+        # Get and validate form from default response.
+        default_response = self.default_response
+        form = default_response["form"]
+        if not form.validate():
+            return default_response
+
+        # Check for existing role.
+        username = form.username.data
+        role_name = TeamRoleType.Member
+        user_id = self.user_service.find_userid(username)
+        existing_role = self.organization_service.get_team_role_by_user(
+            self.team.id, user_id
+        )
+        if existing_role:
+            self.request.session.flash(
+                self.request._(
+                    "User '${username}' is already a team member",
+                    mapping={"username": username},
+                ),
+                queue="error",
+            )
+            return default_response
+
+        # Add user to team.
+        role = self.organization_service.add_team_role(
+            team_id=self.team.id,
+            user_id=user_id,
+            role_name=role_name,
+        )
+
+        # Record events.
+        self.team.organization.record_event(
+            tag="organization:team_role:add",
+            ip_address=self.request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(self.request.user.id),
+                "team_name": self.team.name,
+                "role_name": role_name.value,
+                "target_user_id": str(user_id),
+            },
+        )
+        self.team.record_event(
+            tag="team:team_role:add",
+            ip_address=self.request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(self.request.user.id),
+                "role_name": role_name.value,
+                "target_user_id": str(user_id),
+            },
+        )
+        role.user.record_event(
+            tag="account:team_role:add",
+            ip_address=self.request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(self.request.user.id),
+                "organization_name": self.team.organization.name,
+                "team_name": self.team.name,
+                "role_name": role_name.value,
+            },
+        )
+
+        # Send notification emails.
+        owner_and_manager_users = set(
+            organization_owners(self.request, self.team.organization)
+            + organization_managers(self.request, self.team.organization)
+        )
+        owner_and_manager_users.discard(role.user)
+        send_team_member_added_email(
+            self.request,
+            owner_and_manager_users,
+            user=role.user,
+            submitter=self.request.user,
+            organization_name=self.team.organization.name,
+            team_name=self.team.name,
+        )
+        send_added_as_team_member_email(
+            self.request,
+            role.user,
+            submitter=self.request.user,
+            organization_name=self.team.organization.name,
+            team_name=self.team.name,
+        )
+
+        # Display notification message.
+        self.request.session.flash(
+            f"Added the team {self.team.name!r} to {self.team.organization.name!r}",
+            queue="success",
+        )
+
+        # Refresh teams list.
+        return HTTPSeeOther(self.request.path)
+
+    @view_config(
+        request_method="POST",
+        route_name="manage.team.delete_role",
+        permission="view:team",
+    )
+    def delete_team_role(self):
+        # Get team role.
+        role_id = self.request.POST["role_id"]
+        role = self.organization_service.get_team_role(role_id)
+
+        if not role or role.team_id != self.team.id:
+            self.request.session.flash("Could not find member", queue="error")
+        elif (
+            not self.request.has_permission("manage:team")
+            and role.user != self.request.user
+        ):
+            self.request.session.flash(
+                "Cannot remove other people from the team", queue="error"
+            )
+        else:
+            # Delete team role.
+            self.organization_service.delete_team_role(role.id)
+
+            # Record events.
+            self.team.organization.record_event(
+                tag="organization:team_role:delete",
+                ip_address=self.request.remote_addr,
+                additional={
+                    "submitted_by_user_id": str(self.request.user.id),
+                    "team_name": self.team.name,
+                    "role_name": role.role_name.value,
+                    "target_user_id": str(role.user.id),
+                },
+            )
+            self.team.record_event(
+                tag="team:team_role:delete",
+                ip_address=self.request.remote_addr,
+                additional={
+                    "submitted_by_user_id": str(self.request.user.id),
+                    "role_name": role.role_name.value,
+                    "target_user_id": str(role.user.id),
+                },
+            )
+            role.user.record_event(
+                tag="account:team_role:delete",
+                ip_address=self.request.remote_addr,
+                additional={
+                    "submitted_by_user_id": str(self.request.user.id),
+                    "organization_name": self.team.organization.name,
+                    "team_name": self.team.name,
+                    "role_name": role.role_name.value,
+                },
+            )
+
+            # Send notification emails.
+            owner_and_manager_users = set(
+                organization_owners(self.request, self.team.organization)
+                + organization_managers(self.request, self.team.organization)
+            )
+            owner_and_manager_users.discard(role.user)
+            send_team_member_removed_email(
+                self.request,
+                owner_and_manager_users,
+                user=role.user,
+                submitter=self.request.user,
+                organization_name=self.team.organization.name,
+                team_name=self.team.name,
+            )
+            send_removed_as_team_member_email(
+                self.request,
+                role.user,
+                submitter=self.request.user,
+                organization_name=self.team.organization.name,
+                team_name=self.team.name,
+            )
+
+            # Display notification message.
+            self.request.session.flash("Removed from team", queue="success")
+
+        # Refresh teams list.
+        return HTTPSeeOther(
+            self.request.route_path(
+                "manage.team.roles",
+                organization_name=self.team.organization.normalized_name,
+                team_name=self.team.normalized_name,
+            )
+        )
+
+
 @view_config(
     route_name="manage.projects",
     renderer="manage/projects.html",
@@ -947,7 +2704,10 @@ def manage_projects(request):
             return project.releases[0].created
         return project.created
 
+    projects = set(request.user.projects)
+
     all_user_projects = user_projects(request)
+    projects |= set(all_user_projects["projects_owned"])
     projects_owned = set(
         project.name for project in all_user_projects["projects_owned"]
     )
@@ -957,6 +2717,9 @@ def manage_projects(request):
     projects_requiring_2fa = set(
         project.name for project in all_user_projects["projects_requiring_2fa"]
     )
+
+    for team in request.user.teams:
+        projects |= set(team.projects)
 
     project_invites = (
         request.db.query(RoleInvitation)
@@ -968,7 +2731,7 @@ def manage_projects(request):
         (role_invite.project, role_invite.token) for role_invite in project_invites
     ]
     return {
-        "projects": sorted(request.user.projects, key=_key, reverse=True),
+        "projects": sorted(projects, key=_key, reverse=True),
         "projects_owned": projects_owned,
         "projects_sole_owned": projects_sole_owned,
         "projects_requiring_2fa": projects_requiring_2fa,
@@ -979,7 +2742,7 @@ def manage_projects(request):
 @view_defaults(
     route_name="manage.project.settings",
     context=Project,
-    renderer="manage/settings.html",
+    renderer="manage/project/settings.html",
     uses_session=True,
     permission="manage:project",
     has_translations=True,
@@ -991,14 +2754,43 @@ class ManageProjectSettingsViews:
         self.project = project
         self.request = request
         self.toggle_2fa_requirement_form_class = Toggle2FARequirementForm
+        self.transfer_organization_project_form_class = TransferOrganizationProjectForm
 
     @view_config(request_method="GET")
     def manage_project_settings(self):
+        if self.request.flags.enabled(AdminFlagValue.DISABLE_ORGANIZATIONS):
+            # Disable transfer of project to any organization.
+            organization_choices = set()
+        else:
+            # Allow transfer of project to active orgs owned or managed by user.
+            all_user_organizations = user_organizations(self.request)
+            active_organizations_owned = set(
+                organization.name
+                for organization in all_user_organizations["organizations_owned"]
+                if organization.is_active
+            )
+            active_organizations_managed = set(
+                organization.name
+                for organization in all_user_organizations["organizations_managed"]
+                if organization.is_active
+            )
+            current_organization = (
+                {self.project.organization.name} if self.project.organization else set()
+            )
+            organization_choices = (
+                active_organizations_owned | active_organizations_managed
+            ) - current_organization
+
         return {
             "project": self.project,
             "MAX_FILESIZE": MAX_FILESIZE,
             "MAX_PROJECT_SIZE": MAX_PROJECT_SIZE,
             "toggle_2fa_form": self.toggle_2fa_requirement_form_class(),
+            "transfer_organization_project_form": (
+                self.transfer_organization_project_form_class(
+                    organization_choices=organization_choices,
+                )
+            ),
         }
 
     @view_config(
@@ -1045,6 +2837,519 @@ class ManageProjectSettingsViews:
                 "manage.project.settings", project_name=self.project.name
             )
         )
+
+
+@view_defaults(
+    context=Project,
+    route_name="manage.project.settings.publishing",
+    renderer="manage/project/publishing.html",
+    uses_session=True,
+    require_csrf=True,
+    require_methods=False,
+    permission="manage:project",
+    has_translations=True,
+    require_reauth=True,
+    http_cache=0,
+)
+class ManageOIDCProviderViews:
+    def __init__(self, project, request):
+        self.request = request
+        self.project = project
+        self.oidc_enabled = self.request.registry.settings["warehouse.oidc.enabled"]
+        self.metrics = self.request.find_service(IMetricsService, context=None)
+
+    @property
+    def _ratelimiters(self):
+        return {
+            "user.oidc": self.request.find_service(
+                IRateLimiter, name="user_oidc.provider.register"
+            ),
+            "ip.oidc": self.request.find_service(
+                IRateLimiter, name="ip_oidc.provider.register"
+            ),
+        }
+
+    def _hit_ratelimits(self):
+        self._ratelimiters["user.oidc"].hit(self.request.user.id)
+        self._ratelimiters["ip.oidc"].hit(self.request.remote_addr)
+
+    def _check_ratelimits(self):
+        if not self._ratelimiters["user.oidc"].test(self.request.user.id):
+            raise TooManyOIDCRegistrations(
+                resets_in=self._ratelimiters["user.oidc"].resets_in(
+                    self.request.user.id
+                )
+            )
+
+        if not self._ratelimiters["ip.oidc"].test(self.request.remote_addr):
+            raise TooManyOIDCRegistrations(
+                resets_in=self._ratelimiters["ip.oidc"].resets_in(
+                    self.request.remote_addr
+                )
+            )
+
+    @property
+    def github_provider_form(self):
+        return GitHubProviderForm(
+            self.request.POST,
+            api_token=self.request.registry.settings.get("github.token"),
+        )
+
+    @property
+    def default_response(self):
+        return {
+            "oidc_enabled": self.oidc_enabled,
+            "project": self.project,
+            "github_provider_form": self.github_provider_form,
+        }
+
+    @view_config(request_method="GET")
+    def manage_project_oidc_providers(self):
+        if not self.oidc_enabled:
+            raise HTTPNotFound
+
+        if self.request.flags.enabled(AdminFlagValue.DISALLOW_OIDC):
+            self.request.session.flash(
+                (
+                    "OpenID Connect is temporarily disabled. "
+                    "See https://pypi.org/help#admin-intervention for details."
+                ),
+                queue="error",
+            )
+
+        return self.default_response
+
+    @view_config(request_method="POST", request_param=GitHubProviderForm.__params__)
+    def add_github_oidc_provider(self):
+        if not self.oidc_enabled:
+            raise HTTPNotFound
+
+        self.metrics.increment(
+            "warehouse.oidc.add_provider.attempt", tags=["provider:GitHub"]
+        )
+
+        if self.request.flags.enabled(AdminFlagValue.DISALLOW_OIDC):
+            self.request.session.flash(
+                (
+                    "OpenID Connect is temporarily disabled. "
+                    "See https://pypi.org/help#admin-intervention for details."
+                ),
+                queue="error",
+            )
+            return self.default_response
+
+        try:
+            self._check_ratelimits()
+        except TooManyOIDCRegistrations as exc:
+            self.metrics.increment(
+                "warehouse.oidc.add_provider.ratelimited", tags=["provider:GitHub"]
+            )
+            return HTTPTooManyRequests(
+                self.request._(
+                    "There have been too many attempted OpenID Connect registrations. "
+                    "Try again later."
+                ),
+                retry_after=exc.resets_in.total_seconds(),
+            )
+
+        self._hit_ratelimits()
+
+        response = self.default_response
+        form = response["github_provider_form"]
+
+        if form.validate():
+            # GitHub OIDC providers are unique on the tuple of
+            # (repository_name, repository_owner, workflow_filename), so we check for
+            # an already registered one before creating.
+            provider = (
+                self.request.db.query(GitHubProvider)
+                .filter(
+                    GitHubProvider.repository_name == form.repository.data,
+                    GitHubProvider.repository_owner == form.normalized_owner,
+                    GitHubProvider.workflow_filename == form.workflow_filename.data,
+                )
+                .one_or_none()
+            )
+            if provider is None:
+                provider = GitHubProvider(
+                    repository_name=form.repository.data,
+                    repository_owner=form.normalized_owner,
+                    repository_owner_id=form.owner_id,
+                    workflow_filename=form.workflow_filename.data,
+                )
+
+                self.request.db.add(provider)
+
+            # Each project has a unique set of OIDC providers; the same
+            # provider can't be registered to the project more than once.
+            if provider in self.project.oidc_providers:
+                self.request.session.flash(
+                    f"{provider} is already registered with {self.project.name}",
+                    queue="error",
+                )
+                return response
+
+            for user in self.project.users:
+                send_oidc_provider_added_email(
+                    self.request,
+                    user,
+                    project_name=self.project.name,
+                    provider=provider,
+                )
+
+            self.project.oidc_providers.append(provider)
+
+            self.project.record_event(
+                tag="project:oidc:provider-added",
+                ip_address=self.request.remote_addr,
+                additional={
+                    "provider": provider.provider_name,
+                    "id": str(provider.id),
+                    "specifier": str(provider),
+                },
+            )
+
+            self.request.session.flash(
+                f"Added {provider} to {self.project.name}",
+                queue="success",
+            )
+
+            self.metrics.increment(
+                "warehouse.oidc.add_provider.ok", tags=["provider:GitHub"]
+            )
+
+            return HTTPSeeOther(self.request.path)
+
+        return response
+
+    @view_config(request_method="POST", request_param=DeleteProviderForm.__params__)
+    def delete_oidc_provider(self):
+        if not self.oidc_enabled:
+            raise HTTPNotFound
+
+        self.metrics.increment("warehouse.oidc.delete_provider.attempt")
+
+        if self.request.flags.enabled(AdminFlagValue.DISALLOW_OIDC):
+            self.request.session.flash(
+                (
+                    "OpenID Connect is temporarily disabled. "
+                    "See https://pypi.org/help#admin-intervention for details."
+                ),
+                queue="error",
+            )
+            return self.default_response
+
+        form = DeleteProviderForm(self.request.POST)
+
+        if form.validate():
+            provider = self.request.db.query(OIDCProvider).get(form.provider_id.data)
+
+            # provider will be `None` here if someone manually futzes with the form.
+            if provider is None or provider not in self.project.oidc_providers:
+                self.request.session.flash(
+                    "Invalid publisher for project",
+                    queue="error",
+                )
+                return self.default_response
+
+            for user in self.project.users:
+                send_oidc_provider_removed_email(
+                    self.request,
+                    user,
+                    project_name=self.project.name,
+                    provider=provider,
+                )
+
+            # NOTE: We remove the provider from the project, but we don't actually
+            # delete the provider model itself (since it might be associated
+            # with other projects).
+            self.project.oidc_providers.remove(provider)
+
+            self.project.record_event(
+                tag="project:oidc:provider-removed",
+                ip_address=self.request.remote_addr,
+                additional={
+                    "provider": provider.provider_name,
+                    "id": str(provider.id),
+                    "specifier": str(provider),
+                },
+            )
+
+            self.request.session.flash(
+                f"Removed {provider} from {self.project.name}", queue="success"
+            )
+
+            self.metrics.increment(
+                "warehouse.oidc.delete_provider.ok",
+                tags=[f"provider:{provider.provider_name}"],
+            )
+
+            return HTTPSeeOther(self.request.path)
+
+        return self.default_response
+
+
+@view_config(
+    route_name="manage.project.remove_organization_project",
+    context=Project,
+    uses_session=True,
+    require_methods=["POST"],
+    permission="manage:project",
+    has_translations=True,
+    require_reauth=True,
+)
+def remove_organization_project(project, request):
+    if request.flags.enabled(AdminFlagValue.DISABLE_ORGANIZATIONS):
+        request.session.flash("Organizations are disabled", queue="error")
+        return HTTPSeeOther(
+            request.route_path("manage.project.settings", project_name=project.name)
+        )
+
+    if (
+        # Check that user has permission to remove projects from organization.
+        (project.organization and request.user not in project.organization.owners)
+        # Check that project has an individual owner.
+        or not project_owners(request, project)
+    ):
+        request.session.flash(
+            (
+                "Could not remove project from organization - "
+                "you do not have the required permissions"
+            ),
+            queue="error",
+        )
+        return HTTPSeeOther(
+            request.route_path("manage.project.settings", project_name=project.name)
+        )
+
+    confirm_project(
+        project,
+        request,
+        fail_route="manage.project.settings",
+        field_name="confirm_remove_organization_project_name",
+        error_message="Could not remove project from organization",
+    )
+
+    # Remove project from current organization.
+    organization_service = request.find_service(IOrganizationService, context=None)
+    if organization := project.organization:
+        organization_service.delete_organization_project(organization.id, project.id)
+        organization.record_event(
+            tag="organization:organization_project:remove",
+            ip_address=request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(request.user.id),
+                "project_name": project.name,
+            },
+        )
+        project.record_event(
+            tag="project:organization_project:remove",
+            ip_address=request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(request.user.id),
+                "organization_name": organization.name,
+            },
+        )
+        # Send notification emails.
+        owner_users = set(
+            organization_owners(request, organization)
+            + project_owners(request, project)
+        )
+        send_organization_project_removed_email(
+            request,
+            owner_users,
+            organization_name=organization.name,
+            project_name=project.name,
+        )
+        # Display notification message.
+        request.session.flash(
+            f"Removed the project {project.name!r} from {organization.name!r}",
+            queue="success",
+        )
+
+        return HTTPSeeOther(
+            request.route_path(
+                "manage.organization.projects",
+                organization_name=organization.normalized_name,
+            )
+        )
+
+    request.session.flash(
+        ("Could not remove project from organization - no organization found"),
+        queue="error",
+    )
+    return HTTPSeeOther(
+        request.route_path("manage.project.settings", project_name=project.name)
+    )
+
+
+@view_config(
+    route_name="manage.project.transfer_organization_project",
+    context=Project,
+    uses_session=True,
+    require_methods=["POST"],
+    permission="manage:project",
+    has_translations=True,
+    require_reauth=True,
+)
+def transfer_organization_project(project, request):
+    if request.flags.enabled(AdminFlagValue.DISABLE_ORGANIZATIONS):
+        request.session.flash("Organizations are disabled", queue="error")
+        return HTTPSeeOther(
+            request.route_path("manage.project.settings", project_name=project.name)
+        )
+
+    # Check that user has permission to remove projects from organization.
+    if project.organization and request.user not in project.organization.owners:
+        request.session.flash(
+            "Could not transfer project - you do not have the required permissions",
+            queue="error",
+        )
+        return HTTPSeeOther(
+            request.route_path("manage.project.settings", project_name=project.name)
+        )
+
+    confirm_project(
+        project,
+        request,
+        fail_route="manage.project.settings",
+        field_name="confirm_transfer_organization_project_name",
+        error_message="Could not transfer project",
+    )
+
+    all_user_organizations = user_organizations(request)
+    active_organizations_owned = set(
+        organization.name
+        for organization in all_user_organizations["organizations_owned"]
+        if organization.is_active
+    )
+    active_organizations_managed = set(
+        organization.name
+        for organization in all_user_organizations["organizations_managed"]
+        if organization.is_active
+    )
+    current_organization = (
+        {project.organization.name} if project.organization else set()
+    )
+    organization_choices = (
+        active_organizations_owned | active_organizations_managed
+    ) - current_organization
+
+    form = TransferOrganizationProjectForm(
+        request.POST,
+        organization_choices=organization_choices,
+    )
+
+    if not form.validate():
+        for error_list in form.errors.values():
+            for error in error_list:
+                request.session.flash(error, queue="error")
+        return HTTPSeeOther(
+            request.route_path("manage.project.settings", project_name=project.name)
+        )
+
+    # Remove request user as individual project owner.
+    role = (
+        request.db.query(Role)
+        .join(User)
+        .filter(
+            Role.role_name == "Owner",
+            Role.project == project,
+            Role.user == request.user,
+        )
+        .first()
+    )
+    if role:
+        request.db.delete(role)
+        request.db.add(
+            JournalEntry(
+                name=project.name,
+                action=f"remove {role.role_name} {role.user.username}",
+                submitted_by=request.user,
+                submitted_from=request.remote_addr,
+            )
+        )
+        project.record_event(
+            tag="project:role:delete",
+            ip_address=request.remote_addr,
+            additional={
+                "submitted_by": request.user.username,
+                "role_name": role.role_name,
+                "target_user": role.user.username,
+            },
+        )
+
+    # Remove project from current organization.
+    organization_service = request.find_service(IOrganizationService, context=None)
+    if organization := project.organization:
+        organization_service.delete_organization_project(organization.id, project.id)
+        organization.record_event(
+            tag="organization:organization_project:remove",
+            ip_address=request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(request.user.id),
+                "project_name": project.name,
+            },
+        )
+        project.record_event(
+            tag="project:organization_project:remove",
+            ip_address=request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(request.user.id),
+                "organization_name": organization.name,
+            },
+        )
+        # Send notification emails.
+        owner_users = set(
+            organization_owners(request, organization)
+            + project_owners(request, project)
+        )
+        send_organization_project_removed_email(
+            request,
+            owner_users,
+            organization_name=organization.name,
+            project_name=project.name,
+        )
+
+    # Add project to selected organization.
+    organization = organization_service.get_organization_by_name(form.organization.data)
+    organization_service.add_organization_project(organization.id, project.id)
+    organization.record_event(
+        tag="organization:organization_project:add",
+        ip_address=request.remote_addr,
+        additional={
+            "submitted_by_user_id": str(request.user.id),
+            "project_name": project.name,
+        },
+    )
+    project.record_event(
+        tag="project:organization_project:add",
+        ip_address=request.remote_addr,
+        additional={
+            "submitted_by_user_id": str(request.user.id),
+            "organization_name": organization.name,
+        },
+    )
+
+    # Send notification emails.
+    owner_users = set(
+        organization_owners(request, organization) + project_owners(request, project)
+    )
+    send_organization_project_added_email(
+        request,
+        owner_users,
+        organization_name=organization.name,
+        project_name=project.name,
+    )
+
+    request.session.flash(
+        f"Transferred the project {project.name!r} to {organization.name!r}",
+        queue="success",
+    )
+
+    return HTTPSeeOther(
+        request.route_path("manage.project.settings", project_name=project.name)
+    )
 
 
 def get_user_role_in_project(project, user, request):
@@ -1122,7 +3427,7 @@ def destroy_project_docs(project, request):
 @view_config(
     route_name="manage.project.releases",
     context=Project,
-    renderer="manage/releases.html",
+    renderer="manage/project/releases.html",
     uses_session=True,
     permission="manage:project",
     has_translations=True,
@@ -1165,7 +3470,7 @@ def manage_project_releases(project, request):
 @view_defaults(
     route_name="manage.project.release",
     context=Release,
-    renderer="manage/release.html",
+    renderer="manage/project/release.html",
     uses_session=True,
     require_csrf=True,
     require_methods=False,
@@ -1550,7 +3855,7 @@ class ManageProjectRelease:
 @view_config(
     route_name="manage.project.roles",
     context=Project,
-    renderer="manage/roles.html",
+    renderer="manage/project/roles.html",
     uses_session=True,
     require_methods=False,
     permission="manage:project",
@@ -1558,21 +3863,278 @@ class ManageProjectRelease:
     require_reauth=True,
 )
 def manage_project_roles(project, request, _form_class=CreateRoleForm):
+    organization_service = request.find_service(IOrganizationService, context=None)
     user_service = request.find_service(IUserService, context=None)
+
+    # Roles, invitations, and invite collaborator form for all projects.
+    roles = set(request.db.query(Role).join(User).filter(Role.project == project).all())
+    invitations = set(
+        request.db.query(RoleInvitation)
+        .join(User)
+        .filter(RoleInvitation.project == project)
+        .all()
+    )
     form = _form_class(request.POST, user_service=user_service)
 
-    if request.method == "POST" and form.validate():
-        username = form.username.data
-        role_name = form.role_name.data
-        userid = user_service.find_userid(username)
-        user = user_service.get_user(userid)
-        token_service = request.find_service(ITokenService, name="email")
+    # Team project roles and add internal collaborator form for organization projects.
+    enable_internal_collaborator = bool(
+        not request.flags.enabled(AdminFlagValue.DISABLE_ORGANIZATIONS)
+        and project.organization
+    )
+    if enable_internal_collaborator:
+        team_project_roles = set(
+            request.db.query(TeamProjectRole)
+            .join(Team)
+            .filter(TeamProjectRole.project == project)
+            .all()
+        )
+        internal_role_form = CreateInternalRoleForm(
+            request.POST,
+            team_choices=sorted(team.name for team in project.organization.teams),
+            user_service=user_service,
+        )
+        internal_users = set(
+            organization_owners(request, project.organization)
+            + organization_managers(request, project.organization)
+            + organization_members(request, project.organization)
+        )
+    else:
+        team_project_roles = set()
+        internal_role_form = None
+        internal_users = set()
 
+    default_response = {
+        "project": project,
+        "roles": roles,
+        "invitations": invitations,
+        "form": form,
+        "enable_internal_collaborator": enable_internal_collaborator,
+        "team_project_roles": team_project_roles,
+        "internal_role_form": internal_role_form,
+    }
+
+    # Handle GET.
+    if request.method != "POST":
+        return default_response
+
+    # Determine which form was submitted with POST.
+    if enable_internal_collaborator and "is_team" in request.POST:
+        form = internal_role_form
+
+    # Validate form.
+    if not form.validate():
+        return default_response
+
+    # Try adding team as collaborator.
+    if enable_internal_collaborator and "is_team" in request.POST and form.is_team.data:
+        team_name = form.team_name.data
+        role_name = form.team_project_role_name.data
+        team_id = organization_service.find_teamid(project.organization.id, team_name)
+        team = organization_service.get_team(team_id)
+
+        # Do nothing if role already exists.
         existing_role = (
-            request.db.query(Role)
-            .filter(Role.user == user, Role.project == project)
+            request.db.query(TeamProjectRole)
+            .filter(TeamProjectRole.team == team, TeamProjectRole.project == project)
             .first()
         )
+        if existing_role:
+            request.session.flash(
+                request._(
+                    "Team '${team_name}' already has ${role_name} role for project",
+                    mapping={
+                        "team_name": team_name,
+                        "role_name": existing_role.role_name.value,
+                    },
+                ),
+                queue="error",
+            )
+            return default_response
+
+        # Add internal team.
+        organization_service.add_team_project_role(team.id, project.id, role_name)
+
+        # Add journal entry.
+        request.db.add(
+            JournalEntry(
+                name=project.name,
+                action=f"add {role_name.value} {team_name}",
+                submitted_by=request.user,
+                submitted_from=request.remote_addr,
+            )
+        )
+
+        # Record events.
+        project.record_event(
+            tag="project:team_project_role:create",
+            ip_address=request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(request.user.id),
+                "role_name": role_name.value,
+                "target_team": team.name,
+            },
+        )
+        team.organization.record_event(
+            tag="organization:team_project_role:create",
+            ip_address=request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(request.user.id),
+                "project_name": project.name,
+                "role_name": role_name.value,
+                "target_team": team.name,
+            },
+        )
+        team.record_event(
+            tag="team:team_project_role:create",
+            ip_address=request.remote_addr,
+            additional={
+                "submitted_by_user_id": str(request.user.id),
+                "project_name": project.name,
+                "role_name": role_name.value,
+            },
+        )
+
+        # Send notification emails.
+        member_users = set(team.members)
+        owner_users = set(project.owners + project.organization.owners)
+        owner_users -= member_users
+        send_team_collaborator_added_email(
+            request,
+            owner_users,
+            team=team,
+            submitter=request.user,
+            project_name=project.name,
+            role=role_name.value,
+        )
+        send_added_as_team_collaborator_email(
+            request,
+            member_users,
+            team=team,
+            submitter=request.user,
+            project_name=project.name,
+            role=role_name.value,
+        )
+
+        # Display notification message.
+        request.session.flash(
+            request._(
+                (
+                    "${team_name} now has ${role} permissions "
+                    "for the '${project_name}' project."
+                ),
+                mapping={
+                    "team_name": team.name,
+                    "project_name": project.name,
+                    "role": role_name.value,
+                },
+            ),
+            queue="success",
+        )
+
+        # Refresh project collaborators.
+        return HTTPSeeOther(request.path)
+
+    # Try adding user as collaborator.
+    username = form.username.data
+    role_name = form.role_name.data
+    userid = user_service.find_userid(username)
+    user = user_service.get_user(userid)
+
+    # Do nothing if role already exists.
+    existing_role = (
+        request.db.query(Role)
+        .filter(Role.user == user, Role.project == project)
+        .first()
+    )
+    if existing_role:
+        request.session.flash(
+            request._(
+                "User '${username}' already has ${role_name} role for project",
+                mapping={
+                    "username": username,
+                    "role_name": existing_role.role_name,
+                },
+            ),
+            queue="error",
+        )
+
+        # Refresh project collaborators.
+        return HTTPSeeOther(request.path)
+
+    if enable_internal_collaborator and user in internal_users:
+
+        # Add internal member.
+        request.db.add(Role(user=user, project=project, role_name=role_name))
+
+        # Add journal entry.
+        request.db.add(
+            JournalEntry(
+                name=project.name,
+                action=f"add {role_name} {user.username}",
+                submitted_by=request.user,
+                submitted_from=request.remote_addr,
+            )
+        )
+
+        # Record events.
+        project.record_event(
+            tag="project:role:create",
+            ip_address=request.remote_addr,
+            additional={
+                "submitted_by": request.user.username,
+                "role_name": role_name,
+                "target_user": user.username,
+            },
+        )
+        user.record_event(
+            tag="account:role:create",
+            ip_address=request.remote_addr,
+            additional={
+                "submitted_by": request.user.username,
+                "project_name": project.name,
+                "role_name": role_name,
+            },
+        )
+
+        # Send notification emails.
+        owner_users = set(project.owners + project.organization.owners)
+        owner_users.discard(user)
+        send_collaborator_added_email(
+            request,
+            owner_users,
+            user=user,
+            submitter=request.user,
+            project_name=project.name,
+            role=role_name,
+        )
+        send_added_as_collaborator_email(
+            request,
+            user,
+            submitter=request.user,
+            project_name=project.name,
+            role=role_name,
+        )
+
+        # Display notification message.
+        request.session.flash(
+            request._(
+                "${username} is now ${role} of the '${project_name}' project.",
+                mapping={
+                    "username": username,
+                    "project_name": project.name,
+                    "role": role_name,
+                },
+            ),
+            queue="success",
+        )
+
+        # Refresh project collaborators.
+        return HTTPSeeOther(request.path)
+    else:
+
+        # Invite external user.
+        token_service = request.find_service(ITokenService, name="email")
+
         user_invite = (
             request.db.query(RoleInvitation)
             .filter(RoleInvitation.user == user)
@@ -1586,18 +4148,7 @@ def manage_project_roles(project, request, _form_class=CreateRoleForm):
         except (TokenExpired, AttributeError):
             invite_token = None
 
-        if existing_role:
-            request.session.flash(
-                request._(
-                    "User '${username}' already has ${role_name} role for project",
-                    mapping={
-                        "username": username,
-                        "role_name": existing_role.role_name,
-                    },
-                ),
-                queue="error",
-            )
-        elif user.primary_email is None or not user.primary_email.verified:
+        if user.primary_email is None or not user.primary_email.verified:
             request.session.flash(
                 request._(
                     "User '${username}' does not have a verified primary email "
@@ -1668,6 +4219,15 @@ def manage_project_roles(project, request, _form_class=CreateRoleForm):
                     "target_user": username,
                 },
             )
+            user.record_event(
+                tag="account:role:invite",
+                ip_address=request.remote_addr,
+                additional={
+                    "submitted_by": request.user.username,
+                    "role_name": role_name,
+                    "target_user": username,
+                },
+            )
             request.db.flush()  # in order to get id
             request.session.flash(
                 request._(
@@ -1677,22 +4237,8 @@ def manage_project_roles(project, request, _form_class=CreateRoleForm):
                 queue="success",
             )
 
-        form = _form_class(user_service=user_service)
-
-    roles = set(request.db.query(Role).join(User).filter(Role.project == project).all())
-    invitations = set(
-        request.db.query(RoleInvitation)
-        .join(User)
-        .filter(RoleInvitation.project == project)
-        .all()
-    )
-
-    return {
-        "project": project,
-        "roles": roles,
-        "invitations": invitations,
-        "form": form,
-    }
+        # Refresh project collaborators.
+        return HTTPSeeOther(request.path)
 
 
 @view_config(
@@ -1809,13 +4355,7 @@ def change_project_role(project, request, _form_class=ChangeRoleForm):
                     },
                 )
 
-                owner_roles = (
-                    request.db.query(Role)
-                    .filter(Role.project == project)
-                    .filter(Role.role_name == "Owner")
-                    .all()
-                )
-                owner_users = {owner.user for owner in owner_roles}
+                owner_users = set(project_owners(request, project))
                 # Don't send owner notification email to new user
                 # if they are now an owner
                 owner_users.discard(role.user)
@@ -1886,13 +4426,7 @@ def delete_project_role(project, request):
                 },
             )
 
-            owner_roles = (
-                request.db.query(Role)
-                .filter(Role.project == project)
-                .filter(Role.role_name == "Owner")
-                .all()
-            )
-            owner_users = {owner.user for owner in owner_roles}
+            owner_users = set(project_owners(request, project))
             # Don't send owner notification email to new user
             # if they are now an owner
             owner_users.discard(role.user)
@@ -1918,9 +4452,221 @@ def delete_project_role(project, request):
 
 
 @view_config(
+    route_name="manage.project.change_team_project_role",
+    context=Project,
+    uses_session=True,
+    require_methods=["POST"],
+    permission="manage:project",
+    has_translations=True,
+    require_reauth=True,
+)
+def change_team_project_role(project, request, _form_class=ChangeTeamProjectRoleForm):
+    form = _form_class(request.POST)
+
+    if form.validate():
+        role_id = request.POST["role_id"]
+        try:
+            role = (
+                request.db.query(TeamProjectRole)
+                .join(Team)
+                .filter(
+                    TeamProjectRole.id == role_id, TeamProjectRole.project == project
+                )
+                .one()
+            )
+            if (
+                role.role_name == TeamProjectRoleType.Owner
+                and request.user in role.team.members
+                and request.user not in role.team.organization.owners
+            ):
+                request.session.flash(
+                    "Cannot remove your own team as Owner",
+                    queue="error",
+                )
+            else:
+                # Add journal entry.
+                request.db.add(
+                    JournalEntry(
+                        name=project.name,
+                        action="change {} {} to {}".format(
+                            role.role_name.value,
+                            role.team.name,
+                            form.team_project_role_name.data.value,
+                        ),
+                        submitted_by=request.user,
+                        submitted_from=request.remote_addr,
+                    )
+                )
+
+                # Change team project role.
+                role.role_name = form.team_project_role_name.data
+
+                # Record events.
+                project.record_event(
+                    tag="project:team_project_role:change",
+                    ip_address=request.remote_addr,
+                    additional={
+                        "submitted_by_user_id": str(request.user.id),
+                        "role_name": role.role_name.value,
+                        "target_team": role.team.name,
+                    },
+                )
+                role.team.organization.record_event(
+                    tag="organization:team_project_role:change",
+                    ip_address=request.remote_addr,
+                    additional={
+                        "submitted_by_user_id": str(request.user.id),
+                        "project_name": role.project.name,
+                        "role_name": role.role_name.value,
+                        "target_team": role.team.name,
+                    },
+                )
+                role.team.record_event(
+                    tag="team:team_project_role:change",
+                    ip_address=request.remote_addr,
+                    additional={
+                        "submitted_by_user_id": str(request.user.id),
+                        "project_name": role.project.name,
+                        "role_name": role.role_name.value,
+                    },
+                )
+
+                # Send notification emails.
+                member_users = set(role.team.members)
+                owner_users = set(project.owners + role.team.organization.owners)
+                owner_users -= member_users
+                send_team_collaborator_role_changed_email(
+                    request,
+                    owner_users,
+                    team=role.team,
+                    submitter=request.user,
+                    project_name=project.name,
+                    role=role.role_name.value,
+                )
+                send_role_changed_as_team_collaborator_email(
+                    request,
+                    member_users,
+                    team=role.team,
+                    submitter=request.user,
+                    project_name=project.name,
+                    role=role.role_name.value,
+                )
+
+                # Display notification message.
+                request.session.flash("Changed permissions", queue="success")
+        except NoResultFound:
+            request.session.flash("Could not find permissions", queue="error")
+
+    return HTTPSeeOther(
+        request.route_path("manage.project.roles", project_name=project.name)
+    )
+
+
+@view_config(
+    route_name="manage.project.delete_team_project_role",
+    context=Project,
+    uses_session=True,
+    require_methods=["POST"],
+    permission="manage:project",
+    has_translations=True,
+    require_reauth=True,
+)
+def delete_team_project_role(project, request):
+    try:
+        role = (
+            request.db.query(TeamProjectRole)
+            .join(Team)
+            .filter(TeamProjectRole.project == project)
+            .filter(TeamProjectRole.id == request.POST["role_id"])
+            .one()
+        )
+        removing_self = (
+            role.role_name == TeamProjectRoleType.Owner
+            and request.user in role.team.members
+            and request.user not in role.team.organization.owners
+        )
+        if removing_self:
+            request.session.flash("Cannot remove your own team as Owner", queue="error")
+        else:
+            role_name = role.role_name
+            team = role.team
+
+            # Delete role.
+            request.db.delete(role)
+
+            # Add journal entry.
+            request.db.add(
+                JournalEntry(
+                    name=project.name,
+                    action=f"remove {role_name.value} {team.name}",
+                    submitted_by=request.user,
+                    submitted_from=request.remote_addr,
+                )
+            )
+
+            # Record event.
+            project.record_event(
+                tag="project:team_project_role:delete",
+                ip_address=request.remote_addr,
+                additional={
+                    "submitted_by_user_id": str(request.user.id),
+                    "role_name": role_name.value,
+                    "target_team": team.name,
+                },
+            )
+            team.organization.record_event(
+                tag="organization:team_project_role:delete",
+                ip_address=request.remote_addr,
+                additional={
+                    "submitted_by_user_id": str(request.user.id),
+                    "project_name": project.name,
+                    "role_name": role_name.value,
+                    "target_team": team.name,
+                },
+            )
+            team.record_event(
+                tag="team:team_project_role:delete",
+                ip_address=request.remote_addr,
+                additional={
+                    "submitted_by_user_id": str(request.user.id),
+                    "project_name": project.name,
+                    "role_name": role_name.value,
+                },
+            )
+
+            # Send notification emails.
+            member_users = set(team.members)
+            owner_users = set(project.owners + team.organization.owners)
+            owner_users -= member_users
+            send_team_collaborator_removed_email(
+                request,
+                owner_users,
+                team=role.team,
+                submitter=request.user,
+                project_name=project.name,
+            )
+            send_removed_as_team_collaborator_email(
+                request,
+                member_users,
+                team=role.team,
+                submitter=request.user,
+                project_name=project.name,
+            )
+
+            # Display notification message.
+            request.session.flash("Removed permissions", queue="success")
+    except NoResultFound:
+        request.session.flash("Could not find permissions", queue="error")
+
+    return HTTPSeeOther(
+        request.route_path("manage.project.roles", project_name=project.name)
+    )
+
+
+@view_config(
     route_name="manage.project.history",
     context=Project,
-    renderer="manage/history.html",
+    renderer="manage/project/history.html",
     uses_session=True,
     permission="manage:project",
     has_translations=True,
@@ -1932,10 +4678,10 @@ def manage_project_history(project, request):
         raise HTTPBadRequest("'page' must be an integer.")
 
     events_query = (
-        request.db.query(ProjectEvent)
-        .join(ProjectEvent.project)
-        .filter(ProjectEvent.project_id == project.id)
-        .order_by(ProjectEvent.time.desc())
+        request.db.query(Project.Event)
+        .join(Project.Event.source)
+        .filter(Project.Event.source_id == project.id)
+        .order_by(Project.Event.time.desc())
     )
 
     events = SQLAlchemyORMPage(
@@ -1952,43 +4698,9 @@ def manage_project_history(project, request):
 
 
 @view_config(
-    route_name="manage.project.journal",
-    context=Project,
-    renderer="manage/journal.html",
-    uses_session=True,
-    permission="manage:project",
-    has_translations=True,
-)
-def manage_project_journal(project, request):
-    try:
-        page_num = int(request.params.get("page", 1))
-    except ValueError:
-        raise HTTPBadRequest("'page' must be an integer.")
-
-    journals_query = (
-        request.db.query(JournalEntry)
-        .options(joinedload("submitted_by"))
-        .filter(JournalEntry.name == project.name)
-        .order_by(JournalEntry.submitted_date.desc(), JournalEntry.id.desc())
-    )
-
-    journals = SQLAlchemyORMPage(
-        journals_query,
-        page=page_num,
-        items_per_page=25,
-        url_maker=paginate_url_factory(request),
-    )
-
-    if journals.page_count and page_num > journals.page_count:
-        raise HTTPNotFound
-
-    return {"project": project, "journals": journals}
-
-
-@view_config(
     route_name="manage.project.documentation",
     context=Project,
-    renderer="manage/documentation.html",
+    renderer="manage/project/documentation.html",
     uses_session=True,
     permission="manage:project",
     has_translations=True,

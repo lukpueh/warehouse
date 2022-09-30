@@ -12,12 +12,7 @@
 
 from zope.interface import Attribute, Interface
 
-
-class RateLimiterException(Exception):
-    def __init__(self, *args, resets_in, **kwargs):
-        self.resets_in = resets_in
-
-        return super().__init__(*args, **kwargs)
+from warehouse.rate_limiting.interfaces import RateLimiterException
 
 
 class TooManyFailedLogins(RateLimiterException):
@@ -81,6 +76,12 @@ class IUserService(Interface):
         """
         Return the user object corresponding with the given email, or None
         if there is no user with that email.
+        """
+
+    def get_admins():
+        """
+        Return a list of user objects corresponding with admin users, or []
+        if there is no admin users.
         """
 
     def find_userid(username):
@@ -244,6 +245,12 @@ class IUserService(Interface):
 
         Returns True if supplied recovery code is valid, and marks the stored code as
         burned.
+        """
+
+    def get_password_timestamp(user_id):
+        """
+        Returns POSIX timestamp corresponding to the datetime that the users password
+        was most recently updated
         """
 
 

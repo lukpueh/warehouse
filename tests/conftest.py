@@ -12,6 +12,7 @@
 
 import os
 import os.path
+import re
 import xmlrpc.client
 
 from collections import defaultdict
@@ -23,6 +24,7 @@ import click.testing
 import pretend
 import pyramid.testing
 import pytest
+import stripe
 import webtest as _webtest
 
 from jinja2 import Environment, FileSystemLoader
@@ -30,18 +32,31 @@ from psycopg2.errors import InvalidCatalogName
 from pyramid.i18n import TranslationString
 from pyramid.static import ManifestCacheBuster
 from pyramid_jinja2 import IJinja2Environment
+from pyramid_mailer.mailer import DummyMailer
 from pytest_postgresql.config import get_config
 from pytest_postgresql.janitor import DatabaseJanitor
 from sqlalchemy import event
+from tuf.api.metadata import StorageBackendInterface
 
 import warehouse
 
-from warehouse import admin, config, static
+from warehouse import admin, config, email, static
 from warehouse.accounts import services as account_services
+from warehouse.accounts.interfaces import ITokenService, IUserService
+from warehouse.admin.flags import AdminFlag, AdminFlagValue
+from warehouse.email import services as email_services
+from warehouse.email.interfaces import IEmailSender
 from warehouse.macaroons import services as macaroon_services
 from warehouse.metrics import IMetricsService
+from warehouse.organizations import services as organization_services
+from warehouse.organizations.interfaces import IOrganizationService
+from warehouse.subscriptions import services as subscription_services
+from warehouse.subscriptions.interfaces import IBillingService, ISubscriptionService
+from warehouse.tuf.interfaces import IKeyService
+from warehouse.tuf.services import RepositoryService
 
 from .common.db import Session
+from .common.db.accounts import EmailFactory, UserFactory
 
 
 def pytest_collection_modifyitems(items):
@@ -113,11 +128,26 @@ class _Services:
 
 
 @pytest.fixture
-def pyramid_services(metrics):
+def pyramid_services(
+    billing_service,
+    email_service,
+    metrics,
+    organization_service,
+    subscription_service,
+    token_service,
+    user_service,
+):
     services = _Services()
 
     # Register our global services.
+    services.register_service(billing_service, IBillingService, None, name="")
+    services.register_service(email_service, IEmailSender, None, name="")
     services.register_service(metrics, IMetricsService, None, name="")
+    services.register_service(organization_service, IOrganizationService, None, name="")
+    services.register_service(subscription_service, ISubscriptionService, None, name="")
+    services.register_service(token_service, ITokenService, None, name="password")
+    services.register_service(token_service, ITokenService, None, name="email")
+    services.register_service(user_service, IUserService, None, name="")
 
     return services
 
@@ -128,6 +158,7 @@ def pyramid_request(pyramid_services, jinja, remote_addr):
     dummy_request = pyramid.testing.DummyRequest()
     dummy_request.find_service = pyramid_services.find_service
     dummy_request.remote_addr = remote_addr
+    dummy_request.authentication_method = pretend.stub()
 
     dummy_request.registry.registerUtility(jinja, IJinja2Environment, name=".jinja2")
 
@@ -149,6 +180,14 @@ def pyramid_config(pyramid_request):
 
 
 @pytest.fixture
+def pyramid_user(pyramid_request):
+    user = UserFactory.create()
+    EmailFactory.create(user=user, verified=True)
+    pyramid_request.user = user
+    return user
+
+
+@pytest.fixture
 def cli():
     runner = click.testing.CliRunner()
     with runner.isolated_filesystem():
@@ -162,7 +201,7 @@ def database(request):
     pg_port = config.get("port") or os.environ.get("PGPORT", 5432)
     pg_user = config.get("user")
     pg_db = config.get("db", "tests")
-    pg_version = config.get("version", 10.1)
+    pg_version = config.get("version", 12.8)
 
     janitor = DatabaseJanitor(pg_user, pg_host, pg_port, pg_db, pg_version)
 
@@ -217,11 +256,16 @@ def app_config(database):
         "simple.backend": "warehouse.packaging.services.LocalSimpleStorage",
         "docs.backend": "warehouse.packaging.services.LocalDocsStorage",
         "sponsorlogos.backend": "warehouse.admin.services.LocalSponsorLogoStorage",
+        "billing.backend": "warehouse.subscriptions.services.MockStripeBillingService",
         "mail.backend": "warehouse.email.services.SMTPEmailSender",
+        "tuf.storage_backend": "warehouse.tuf.services.LocalStorageService",
+        "tuf.key_backend": "warehouse.tuf.services.LocalKeyService",
+        "tuf.repository_backend": "warehouse.tuf.services.RepositoryService",
         "malware_check.backend": (
             "warehouse.malware.services.PrinterMalwareCheckService"
         ),
         "files.url": "http://localhost:7000/",
+        "tuf.url": "http://localhost:7000/metadata/",
         "sessions.secret": "123456",
         "sessions.url": "redis://localhost:0/",
         "statuspage.url": "https://2p66nmmycsj3.statuspage.io",
@@ -277,8 +321,39 @@ def macaroon_service(db_session):
 
 
 @pytest.fixture
+def organization_service(db_session, remote_addr):
+    return organization_services.DatabaseOrganizationService(
+        db_session, remote_addr=remote_addr
+    )
+
+
+@pytest.fixture
+def billing_service(app_config):
+    stripe.api_base = app_config.registry.settings["billing.api_base"]
+    stripe.api_version = app_config.registry.settings["billing.api_version"]
+    stripe.api_key = "sk_test_123"
+    return subscription_services.MockStripeBillingService(
+        api=stripe,
+        publishable_key="pk_test_123",
+        webhook_secret="whsec_123",
+    )
+
+
+@pytest.fixture
+def subscription_service(db_session):
+    return subscription_services.StripeSubscriptionService(db_session)
+
+
+@pytest.fixture
 def token_service(app_config):
     return account_services.TokenService(secret="secret", salt="salt", max_age=21600)
+
+
+@pytest.fixture
+def email_service():
+    return email_services.SMTPEmailSender(
+        mailer=DummyMailer(), sender="noreply@pypi.dev"
+    )
 
 
 class QueryRecorder:
@@ -326,11 +401,85 @@ def db_request(pyramid_request, db_session):
     return pyramid_request
 
 
+@pytest.fixture
+def enable_organizations(db_request):
+    flag = db_request.db.query(AdminFlag).get(
+        AdminFlagValue.DISABLE_ORGANIZATIONS.value
+    )
+    flag.enabled = False
+    yield
+    flag.enabled = True
+
+
+@pytest.fixture
+def send_email(pyramid_request, monkeypatch):
+    send_email_stub = pretend.stub(
+        delay=pretend.call_recorder(lambda *args, **kwargs: None)
+    )
+    pyramid_request.task = pretend.call_recorder(
+        lambda *args, **kwargs: send_email_stub
+    )
+    pyramid_request.registry.settings = {"mail.sender": "noreply@example.com"}
+    monkeypatch.setattr(email, "send_email", send_email_stub)
+    return send_email_stub
+
+
+@pytest.fixture
+def make_email_renderers(pyramid_config):
+    def _make_email_renderers(
+        name,
+        subject="Email Subject",
+        body="Email Body",
+        html="Email HTML Body",
+    ):
+        subject_renderer = pyramid_config.testing_add_renderer(
+            f"email/{name}/subject.txt"
+        )
+        subject_renderer.string_response = subject
+        body_renderer = pyramid_config.testing_add_renderer(f"email/{name}/body.txt")
+        body_renderer.string_response = body
+        html_renderer = pyramid_config.testing_add_renderer(f"email/{name}/body.html")
+        html_renderer.string_response = html
+        return subject_renderer, body_renderer, html_renderer
+
+    return _make_email_renderers
+
+
 class _TestApp(_webtest.TestApp):
     def xmlrpc(self, path, method, *args):
         body = xmlrpc.client.dumps(args, methodname=method)
         resp = self.post(path, body, headers={"Content-Type": "text/xml"})
         return xmlrpc.client.loads(resp.body)
+
+
+@pytest.fixture
+def tuf_repository(db_request):
+    class FakeStorageBackend(StorageBackendInterface):
+        pass
+
+    class FakeKeyBackend(IKeyService):
+        pass
+
+    db_request.registry.settings = {
+        "tuf.keytype": "ed25519",
+        "tuf.root.threshold": 1,
+        "tuf.root.expiry": 31536000,
+        "tuf.snapshot.threshold": 1,
+        "tuf.snapshot.expiry": 86400,
+        "tuf.targets.threshold": 2,
+        "tuf.targets.expiry": 31536000,
+        "tuf.timestamp.threshold": 1,
+        "tuf.timestamp.expiry": 86400,
+        "tuf.bins.threshold": 1,
+        "tuf.bins.expiry": 31536000,
+        "tuf.bin-n.threshold": 1,
+        "tuf.bin-n.expiry": 604800,
+    }
+
+    tuf_repo = RepositoryService(
+        FakeStorageBackend, FakeKeyBackend, db_request.registry.settings
+    )
+    return tuf_repo
 
 
 @pytest.fixture
@@ -378,3 +527,71 @@ def monkeypatch_session():
     m = MonkeyPatch()
     yield m
     m.undo()
+
+
+class _MockRedis:
+    """
+    Just enough Redis for our tests.
+    In-memory only, no persistence.
+    Does NOT implement the full Redis API.
+    """
+
+    def __init__(self, cache=None):
+        self.cache = cache
+
+        if not self.cache:
+            self.cache = dict()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        pass
+
+    def delete(self, key):
+        del self.cache[key]
+
+    def execute(self):
+        pass
+
+    def exists(self, key):
+        return key in self.cache
+
+    def expire(self, _key, _seconds):
+        pass
+
+    def from_url(self, _url):
+        return self
+
+    def hget(self, hash_, key):
+        try:
+            return self.cache[hash_][key]
+        except KeyError:
+            return None
+
+    def hset(self, hash_, key, value, *_args, **_kwargs):
+        if hash_ not in self.cache:
+            self.cache[hash_] = dict()
+        self.cache[hash_][key] = value
+
+    def get(self, key):
+        return self.cache.get(key)
+
+    def pipeline(self):
+        return self
+
+    def scan_iter(self, search, count):
+        del count  # unused
+        return [key for key in self.cache.keys() if re.search(search, key)]
+
+    def set(self, key, value):
+        self.cache[key] = value
+
+    def setex(self, key, value, _seconds):
+        self.cache[key] = value
+
+
+@pytest.fixture
+def mockredis():
+    mock_redis = _MockRedis()
+    yield mock_redis

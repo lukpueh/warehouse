@@ -18,14 +18,37 @@ import pytest
 from pyramid.authorization import Allow
 from pyramid.location import lineage
 
-from warehouse.packaging.models import Dependency, DependencyKind, File, ProjectFactory
+from warehouse.organizations.models import TeamProjectRoleType
+from warehouse.packaging.models import File, ProjectFactory, ReleaseURL
 
+from ...common.db.organizations import (
+    OrganizationFactory as DBOrganizationFactory,
+    OrganizationProjectFactory as DBOrganizationProjectFactory,
+    OrganizationRoleFactory as DBOrganizationRoleFactory,
+    TeamFactory as DBTeamFactory,
+    TeamProjectRoleFactory as DBTeamProjectRoleFactory,
+    TeamRoleFactory as DBTeamRoleFactory,
+)
 from ...common.db.packaging import (
+    DependencyFactory as DBDependencyFactory,
     FileFactory as DBFileFactory,
     ProjectFactory as DBProjectFactory,
     ReleaseFactory as DBReleaseFactory,
     RoleFactory as DBRoleFactory,
+    RoleInvitationFactory as DBRoleInvitationFactory,
 )
+
+
+class TestRole:
+    def test_repr(self, db_request):
+        role = DBRoleFactory()
+        assert isinstance(repr(role), str)
+
+
+class TestRoleInvitation:
+    def test_repr(self, db_request):
+        role_invitation = DBRoleInvitationFactory()
+        assert isinstance(repr(role_invitation), str)
 
 
 class TestProjectFactory:
@@ -42,6 +65,13 @@ class TestProjectFactory:
 
         with pytest.raises(KeyError):
             root[project.name + "invalid"]
+
+    def test_contains(self, db_request):
+        DBProjectFactory.create(name="foo")
+        root = ProjectFactory(db_request)
+
+        assert "foo" in root
+        assert "bar" not in root
 
 
 class TestProject:
@@ -101,6 +131,16 @@ class TestProject:
         maintainer1 = DBRoleFactory.create(project=project, role_name="Maintainer")
         maintainer2 = DBRoleFactory.create(project=project, role_name="Maintainer")
 
+        organization = DBOrganizationFactory.create()
+        owner3 = DBOrganizationRoleFactory.create(organization=organization)
+        DBOrganizationProjectFactory.create(organization=organization, project=project)
+
+        team = DBTeamFactory.create()
+        owner4 = DBTeamRoleFactory.create(team=team)
+        DBTeamProjectRoleFactory.create(
+            team=team, project=project, role_name=TeamProjectRoleType.Owner
+        )
+
         acls = []
         for location in lineage(project):
             try:
@@ -118,17 +158,40 @@ class TestProject:
             (Allow, "group:moderators", "moderator"),
         ] + sorted(
             [
-                (Allow, str(owner1.user.id), ["manage:project", "upload"]),
-                (Allow, str(owner2.user.id), ["manage:project", "upload"]),
+                (Allow, f"user:{owner1.user.id}", ["manage:project", "upload"]),
+                (Allow, f"user:{owner2.user.id}", ["manage:project", "upload"]),
+                (Allow, f"user:{owner3.user.id}", ["manage:project", "upload"]),
+                (Allow, f"user:{owner4.user.id}", ["manage:project", "upload"]),
             ],
             key=lambda x: x[1],
         ) + sorted(
             [
-                (Allow, str(maintainer1.user.id), ["upload"]),
-                (Allow, str(maintainer2.user.id), ["upload"]),
+                (Allow, f"user:{maintainer1.user.id}", ["upload"]),
+                (Allow, f"user:{maintainer2.user.id}", ["upload"]),
             ],
             key=lambda x: x[1],
         )
+
+    def test_repr(self, db_request):
+        project = DBProjectFactory()
+        assert isinstance(repr(project), str)
+
+
+class TestDependency:
+    def test_repr(self, db_session):
+        dependency = DBDependencyFactory.create()
+        assert isinstance(repr(dependency), str)
+
+
+class TestReleaseURL:
+    def test_repr(self, db_session):
+        release = DBReleaseFactory.create()
+        release_url = ReleaseURL(
+            release=release,
+            name="Homepage",
+            url="https://example.com/",
+        )
+        assert isinstance(repr(release_url), str)
 
 
 class TestRelease:
@@ -252,17 +315,34 @@ class TestRelease:
                     ]
                 ),
             ),
-            # ignore invalid links
+            # similar spellings of homepage/download label doesn't duplicate urls
             (
-                None,
+                "https://example.com/home/",
+                "https://example.com/download/",
+                [
+                    "homepage, https://example.com/home/",
+                    "download-URL ,https://example.com/download/",
+                ],
+                OrderedDict(
+                    [
+                        ("Homepage", "https://example.com/home/"),
+                        ("Download", "https://example.com/download/"),
+                    ]
+                ),
+            ),
+            # the duplicate removal only happens if the urls are equal too!
+            (
+                "https://example.com/home1/",
                 None,
                 [
-                    " ,https://example.com/home/",
-                    ",https://example.com/home/",
-                    "https://example.com/home/",
-                    "Download,https://example.com/download/",
+                    "homepage, https://example.com/home2/",
                 ],
-                OrderedDict([("Download", "https://example.com/download/")]),
+                OrderedDict(
+                    [
+                        ("Homepage", "https://example.com/home1/"),
+                        ("homepage", "https://example.com/home2/"),
+                    ]
+                ),
             ),
         ],
     )
@@ -272,11 +352,12 @@ class TestRelease:
         )
 
         for urlspec in project_urls:
+            label, _, url = urlspec.partition(",")
             db_session.add(
-                Dependency(
+                ReleaseURL(
                     release=release,
-                    kind=DependencyKind.project_url.value,
-                    specifier=urlspec,
+                    name=label.strip(),
+                    url=url.strip(),
                 )
             )
 
@@ -308,14 +389,14 @@ class TestRelease:
             (Allow, "group:moderators", "moderator"),
         ] + sorted(
             [
-                (Allow, str(owner1.user.id), ["manage:project", "upload"]),
-                (Allow, str(owner2.user.id), ["manage:project", "upload"]),
+                (Allow, f"user:{owner1.user.id}", ["manage:project", "upload"]),
+                (Allow, f"user:{owner2.user.id}", ["manage:project", "upload"]),
             ],
             key=lambda x: x[1],
         ) + sorted(
             [
-                (Allow, str(maintainer1.user.id), ["upload"]),
-                (Allow, str(maintainer2.user.id), ["upload"]),
+                (Allow, f"user:{maintainer1.user.id}", ["upload"]),
+                (Allow, f"user:{maintainer2.user.id}", ["upload"]),
             ],
             key=lambda x: x[1],
         )
@@ -325,23 +406,23 @@ class TestRelease:
         [
             (None, None),
             (
-                "https://github.com/pypa/warehouse",
-                "https://api.github.com/repos/pypa/warehouse",
+                "https://github.com/pypi/warehouse",
+                "https://api.github.com/repos/pypi/warehouse",
             ),
             (
-                "https://github.com/pypa/warehouse/",
-                "https://api.github.com/repos/pypa/warehouse",
+                "https://github.com/pypi/warehouse/",
+                "https://api.github.com/repos/pypi/warehouse",
             ),
             (
-                "https://github.com/pypa/warehouse/tree/master",
-                "https://api.github.com/repos/pypa/warehouse",
+                "https://github.com/pypi/warehouse/tree/main",
+                "https://api.github.com/repos/pypi/warehouse",
             ),
             (
-                "https://www.github.com/pypa/warehouse",
-                "https://api.github.com/repos/pypa/warehouse",
+                "https://www.github.com/pypi/warehouse",
+                "https://api.github.com/repos/pypi/warehouse",
             ),
             ("https://github.com/pypa/", None),
-            ("https://google.com/pypa/warehouse/tree/master", None),
+            ("https://google.com/pypi/warehouse/tree/main", None),
             ("https://google.com", None),
             ("incorrect url", None),
         ],

@@ -10,8 +10,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 from unittest import mock
 
+import orjson
 import pretend
 import pytest
 
@@ -22,7 +25,7 @@ from pyramid.tweens import EXCVIEW
 
 from warehouse import config
 from warehouse.errors import BasicAuthBreachedPassword, BasicAuthFailedPassword
-from warehouse.utils.wsgi import HostRewrite, ProxyFixer, VhmRootRemover
+from warehouse.utils.wsgi import ProxyFixer, VhmRootRemover
 
 
 class TestRequireHTTPSTween:
@@ -157,17 +160,17 @@ def test_maybe_set_compound(monkeypatch, environ, base, name, envvar, expected):
 
 
 @pytest.mark.parametrize(
-    ("settings", "environment", "other_settings"),
+    ("settings", "environment"),
     [
-        (None, config.Environment.production, {}),
-        ({}, config.Environment.production, {}),
-        ({"my settings": "the settings value"}, config.Environment.production, {}),
-        (None, config.Environment.development, {}),
-        ({}, config.Environment.development, {}),
-        ({"my settings": "the settings value"}, config.Environment.development, {}),
+        (None, config.Environment.production),
+        ({}, config.Environment.production),
+        ({"my settings": "the settings value"}, config.Environment.production),
+        (None, config.Environment.development),
+        ({}, config.Environment.development),
+        ({"my settings": "the settings value"}, config.Environment.development),
     ],
 )
-def test_configure(monkeypatch, settings, environment, other_settings):
+def test_configure(monkeypatch, settings, environment):
     json_renderer_obj = pretend.stub()
     json_renderer_cls = pretend.call_recorder(lambda **kw: json_renderer_obj)
     monkeypatch.setattr(renderers, "JSON", json_renderer_cls)
@@ -176,8 +179,17 @@ def test_configure(monkeypatch, settings, environment, other_settings):
     xmlrpc_renderer_cls = pretend.call_recorder(lambda **kw: xmlrpc_renderer_obj)
     monkeypatch.setattr(config, "XMLRPCRenderer", xmlrpc_renderer_cls)
 
-    if environment == config.Environment.development:
-        monkeypatch.setenv("WAREHOUSE_ENV", "development")
+    # Ignore all environment variables in the test environment, except for WAREHOUSE_ENV
+    monkeypatch.setattr(
+        os,
+        "environ",
+        {
+            "WAREHOUSE_ENV": {
+                config.Environment.development: "development",
+                config.Environment.production: "production",
+            }[environment],
+        },
+    )
 
     class FakeRegistry(dict):
         def __init__(self):
@@ -190,7 +202,7 @@ def test_configure(monkeypatch, settings, environment, other_settings):
                 "warehouse.xmlrpc.client.ratelimit_string": "3600 per hour",
             }
 
-    configurator_settings = other_settings.copy()
+    configurator_settings = dict()
     configurator_obj = pretend.stub(
         registry=FakeRegistry(),
         set_root_factory=pretend.call_recorder(lambda rf: None),
@@ -225,7 +237,7 @@ def test_configure(monkeypatch, settings, environment, other_settings):
     )
     monkeypatch.setattr(config, "transaction", transaction)
 
-    result = config.configure(settings=settings)
+    result = config.configure(settings=settings.copy() if settings else None)
 
     expected_settings = {
         "warehouse.env": environment,
@@ -243,10 +255,15 @@ def test_configure(monkeypatch, settings, environment, other_settings):
         "warehouse.account.ip_login_ratelimit_string": "10 per 5 minutes",
         "warehouse.account.global_login_ratelimit_string": "1000 per 5 minutes",
         "warehouse.account.email_add_ratelimit_string": "2 per day",
+        "warehouse.account.verify_email_ratelimit_string": "3 per 6 hours",
         "warehouse.account.password_reset_ratelimit_string": "5 per day",
+        "warehouse.manage.oidc.user_registration_ratelimit_string": "20 per day",
+        "warehouse.manage.oidc.ip_registration_ratelimit_string": "20 per day",
         "warehouse.two_factor_requirement.enabled": False,
         "warehouse.two_factor_mandate.available": False,
         "warehouse.two_factor_mandate.enabled": False,
+        "warehouse.oidc.enabled": False,
+        "warehouse.two_factor_mandate.cohort_size": 0,
     }
     if environment == config.Environment.development:
         expected_settings.update(
@@ -278,6 +295,7 @@ def test_configure(monkeypatch, settings, environment, other_settings):
                         "IntrospectionDebugPanel"
                     ),
                 ],
+                "tuf.development_metadata_expiry": 31536000,
             }
         )
 
@@ -290,7 +308,6 @@ def test_configure(monkeypatch, settings, environment, other_settings):
     assert configurator_obj.add_wsgi_middleware.calls == [
         pretend.call(ProxyFixer, token="insecure token", num_proxies=1),
         pretend.call(VhmRootRemover),
-        pretend.call(HostRewrite),
     ]
     assert configurator_obj.include.calls == (
         [
@@ -339,7 +356,10 @@ def test_configure(monkeypatch, settings, environment, other_settings):
             pretend.call(".oidc"),
             pretend.call(".malware"),
             pretend.call(".manage"),
+            pretend.call(".organizations"),
+            pretend.call(".subscriptions"),
             pretend.call(".packaging"),
+            pretend.call(".tuf"),
             pretend.call(".redirects"),
             pretend.call(".routes"),
             pretend.call(".sponsors"),
@@ -392,7 +412,7 @@ def test_configure(monkeypatch, settings, environment, other_settings):
         ),
     ]
     assert configurator_obj.add_static_view.calls == [
-        pretend.call("static", "warehouse:static/dist/", cache_max_age=315360000)
+        pretend.call("static", "warehouse:static/dist/", cache_max_age=315360000),
     ]
     assert configurator_obj.add_cache_buster.calls == [
         pretend.call("warehouse:static/dist/", cachebuster_obj)
@@ -428,7 +448,10 @@ def test_configure(monkeypatch, settings, environment, other_settings):
     ]
 
     assert json_renderer_cls.calls == [
-        pretend.call(sort_keys=True, separators=(",", ":"))
+        pretend.call(
+            serializer=orjson.dumps,
+            option=orjson.OPT_SORT_KEYS | orjson.OPT_APPEND_NEWLINE,
+        )
     ]
 
     assert xmlrpc_renderer_cls.calls == [pretend.call(allow_none=True)]

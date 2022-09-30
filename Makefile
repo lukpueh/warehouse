@@ -1,5 +1,6 @@
 DB := example
 IPYTHON := no
+WAREHOUSE_CLI := docker-compose run --rm web python -m warehouse
 
 # set environment variable WAREHOUSE_IPYTHON_SHELL=1 if IPython
 # needed in development environment
@@ -17,11 +18,25 @@ default:
 	@echo
 	@exit 1
 
-.state/docker-build: Dockerfile package.json package-lock.json requirements/main.txt requirements/deploy.txt
-	# Build our docker containers for this project.
+.state/docker-build-web: Dockerfile package.json package-lock.json requirements/main.txt requirements/deploy.txt requirements/lint.txt requirements/docs.txt requirements/dev.txt requirements/tests.txt
+	# Build our web container for this project.
 	docker-compose build --build-arg IPYTHON=$(IPYTHON) --force-rm web
-	docker-compose build --force-rm worker
+
+	# Mark the state so we don't rebuild this needlessly.
+	mkdir -p .state
+	touch .state/docker-build-web
+
+.state/docker-build-static: Dockerfile package.json package-lock.json .babelrc
+	# Build our static container for this project.
 	docker-compose build --force-rm static
+
+	# Mark the state so we don't rebuild this needlessly.
+	mkdir -p .state
+	touch .state/docker-build-static
+
+.state/docker-build: .state/docker-build-web .state/docker-build-static
+	# Build the worker container for this project
+	docker-compose build --force-rm worker
 
 	# Mark the state so we don't rebuild this needlessly.
 	mkdir -p .state
@@ -35,56 +50,73 @@ build:
 serve: .state/docker-build
 	docker-compose up --remove-orphans
 
-debug: .state/docker-build
+debug: .state/docker-build-web
 	docker-compose run --rm --service-ports web
 
-tests: .state/docker-build
+tests: .state/docker-build-web
 	docker-compose run --rm web bin/tests --postgresql-host db $(T) $(TESTARGS)
 
-static_tests: .state/docker-build
+static_tests: .state/docker-build-static
 	docker-compose run --rm static bin/static_tests $(T) $(TESTARGS)
 
-static_pipeline: .state/docker-build
+static_pipeline: .state/docker-build-static
 	docker-compose run --rm static bin/static_pipeline $(T) $(TESTARGS)
 
-reformat: .state/docker-build
+reformat: .state/docker-build-web
 	docker-compose run --rm web bin/reformat
 
-lint: .state/docker-build
-	docker-compose run --rm web bin/lint && bin/static_lint
+lint: .state/docker-build-web
+	docker-compose run --rm web bin/lint
+	docker-compose run --rm static bin/static_lint
 
-docs: .state/docker-build
+docs: .state/docker-build-web
 	docker-compose run --rm web bin/docs
 
-licenses: .state/docker-build
+licenses: .state/docker-build-web
 	docker-compose run --rm web bin/licenses
 
-deps: .state/docker-build
+deps: .state/docker-build-web
 	docker-compose run --rm web bin/deps
 
-translations: .state/docker-build
+translations: .state/docker-build-web
 	docker-compose run --rm web bin/translations
 
 requirements/%.txt: requirements/%.in
 	docker-compose run --rm web bin/pip-compile --allow-unsafe --generate-hashes --output-file=$@ $<
 
-initdb:
+initdb: .state/docker-build-web
 	docker-compose run --rm web psql -h db -d postgres -U postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname ='warehouse';"
 	docker-compose run --rm web psql -h db -d postgres -U postgres -c "DROP DATABASE IF EXISTS warehouse"
 	docker-compose run --rm web psql -h db -d postgres -U postgres -c "CREATE DATABASE warehouse ENCODING 'UTF8'"
-	xz -d -f -k dev/$(DB).sql.xz --stdout | docker-compose run --rm web psql -h db -d warehouse -U postgres -v ON_ERROR_STOP=1 -1 -f -
+	docker-compose run --rm web bash -c "xz -d -f -k dev/$(DB).sql.xz --stdout | psql -h db -d warehouse -U postgres -v ON_ERROR_STOP=1 -1 -f -"
+	docker-compose run --rm web psql -h db -d warehouse -U postgres -c "UPDATE users SET name='Ee Durbin' WHERE username='ewdurbin'"
 	docker-compose run --rm web python -m warehouse db upgrade head
+	docker-compose run --rm web python -m warehouse sponsors populate-db
+	docker-compose run --rm web python -m warehouse classifiers sync
 	$(MAKE) reindex
-	docker-compose run web python -m warehouse sponsors populate-db
 
-reindex:
+inittuf:
+	$(WAREHOUSE_CLI) tuf dev keypair --name root --path /opt/warehouse/src/dev/tufkeys/root
+	$(WAREHOUSE_CLI) tuf dev keypair --name snapshot --path /opt/warehouse/src/dev/tufkeys/snapshot
+	$(WAREHOUSE_CLI) tuf dev keypair --name targets --path /opt/warehouse/src/dev/tufkeys/targets1
+	$(WAREHOUSE_CLI) tuf dev keypair --name targets --path /opt/warehouse/src/dev/tufkeys/targets2
+	$(WAREHOUSE_CLI) tuf dev keypair --name timestamp --path /opt/warehouse/src/dev/tufkeys/timestamp
+	$(WAREHOUSE_CLI) tuf dev keypair --name bins --path /opt/warehouse/src/dev/tufkeys/bins
+	$(WAREHOUSE_CLI) tuf dev keypair --name bin-n --path /opt/warehouse/src/dev/tufkeys/bin-n
+	$(WAREHOUSE_CLI) tuf dev init-repo
+	$(WAREHOUSE_CLI) tuf dev init-delegations
+	$(WAREHOUSE_CLI) tuf dev add-all-packages
+	$(WAREHOUSE_CLI) tuf dev add-all-indexes
+
+reindex: .state/docker-build-web
 	docker-compose run --rm web python -m warehouse search reindex
 
-shell:
+shell: .state/docker-build-web
 	docker-compose run --rm web python -m warehouse shell
 
 clean:
 	rm -rf dev/*.sql
+	rm -rf dev/tufkeys
 
 purge: stop clean
 	rm -rf .state

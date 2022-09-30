@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import hashlib
+import os.path
 import tempfile
 
 import pretend
@@ -31,19 +32,19 @@ def test_render_simple_detail(db_request, monkeypatch, jinja):
     fakeblake2b = pretend.call_recorder(lambda *a, **kw: fake_hasher)
     monkeypatch.setattr(hashlib, "blake2b", fakeblake2b)
 
-    template = jinja.get_template("templates/legacy/api/simple/detail.html")
+    template = jinja.get_template("templates/api/simple/detail.html")
     expected_content = template.render(
         **_simple_detail(project, db_request), request=db_request
     ).encode("utf-8")
 
-    content_hash, path = render_simple_detail(project, db_request)
+    result = render_simple_detail(project, db_request)
 
     assert fakeblake2b.calls == [pretend.call(digest_size=32)]
     assert fake_hasher.update.calls == [pretend.call(expected_content)]
     assert fake_hasher.hexdigest.calls == [pretend.call()]
 
-    assert content_hash == "deadbeefdeadbeefdeadbeefdeadbeef"
-    assert path == (
+    assert result.get("content_hash") == "deadbeefdeadbeefdeadbeefdeadbeef"
+    assert result.get("path") == (
         f"{project.normalized_name}/deadbeefdeadbeefdeadbeefdeadbeef"
         + f".{project.normalized_name}.html"
     )
@@ -75,6 +76,7 @@ def test_render_simple_detail_with_store(db_request, monkeypatch, jinja):
         write=pretend.call_recorder(lambda data: None),
         flush=pretend.call_recorder(lambda: None),
     )
+    monkeypatch.setattr(os.path, "getsize", lambda *a, **kw: 1234)
 
     class FakeNamedTemporaryFile:
         def __init__(self):
@@ -88,12 +90,12 @@ def test_render_simple_detail_with_store(db_request, monkeypatch, jinja):
 
     monkeypatch.setattr(tempfile, "NamedTemporaryFile", FakeNamedTemporaryFile)
 
-    template = jinja.get_template("templates/legacy/api/simple/detail.html")
+    template = jinja.get_template("templates/api/simple/detail.html")
     expected_content = template.render(
         **_simple_detail(project, db_request), request=db_request
     ).encode("utf-8")
 
-    content_hash, path = render_simple_detail(project, db_request, store=True)
+    result = render_simple_detail(project, db_request, store=True)
 
     assert fake_named_temporary_file.write.calls == [pretend.call(expected_content)]
     assert fake_named_temporary_file.flush.calls == [pretend.call()]
@@ -126,8 +128,8 @@ def test_render_simple_detail_with_store(db_request, monkeypatch, jinja):
         ),
     ]
 
-    assert content_hash == "deadbeefdeadbeefdeadbeefdeadbeef"
-    assert path == (
+    assert result.get("content_hash") == "deadbeefdeadbeefdeadbeefdeadbeef"
+    assert result.get("path") == (
         f"{project.normalized_name}/deadbeefdeadbeefdeadbeefdeadbeef"
         + f".{project.normalized_name}.html"
     )

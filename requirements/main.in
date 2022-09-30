@@ -11,6 +11,7 @@ click
 cryptography
 datadog>=0.19.0
 disposable-email-domains
+docutils<0.19
 elasticsearch>=7.0.0,<7.11.0
 elasticsearch_dsl>=7.0.0,<8.0.0
 first
@@ -22,20 +23,23 @@ itsdangerous
 Jinja2>=2.8
 limits
 lxml
+kombu[sqs]~=5.2.4  # https://github.com/celery/celery/issues/7070
 mistune
 msgpack
 natsort
+orjson
 packaging>=15.2
 paginate>=0.5.2
 paginate_sqlalchemy
 passlib>=1.6.4
+pip-api
 premailer
 psycopg2
 pycurl
+pydantic
 pyqrcode
 pyramid>=2.0
 pymacaroons
-pyramid-multiauth
 pyramid_jinja2>=2.5
 pyramid_mailer>=0.14.1
 pyramid_retry>=0.3
@@ -44,20 +48,23 @@ pyramid_services>=2.1
 pyramid_tm>=0.12
 python-slugify
 PyJWT[crypto]>=2.3.0
-readme-renderer[md]>=0.7.0
+readme-renderer[md]>=36.0
 requests
 requests-aws4auth
 redis>=2.8.0,<5.0.0
 rfc3986
+securesystemslib
 sentry-sdk
 setuptools
-sqlalchemy[asyncio]>=0.9,<1.5.0  # https://github.com/pypa/warehouse/pull/9228
+sqlalchemy[asyncio]>=0.9,<1.5.0  # https://github.com/pypi/warehouse/pull/9228
 sqlalchemy-citext
 sqlalchemy-utils
 stdlib-list
+stripe
 structlog
 transaction
 trove-classifiers
+tuf==2.0.0
 typeguard
 webauthn>=1.0.0,<2.0.0
 whitenoise

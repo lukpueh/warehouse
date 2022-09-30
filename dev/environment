@@ -16,6 +16,13 @@ REDIS_URL=redis://redis:6379/0
 
 SESSION_SECRET="an insecure development secret"
 
+# Use stripe-mock local billing service for development.
+# Use Stripe billing service with test keys for development.
+# See Stripe Dashboard for keys. https://dashboard.stripe.com/apikeys
+# See Stripe Docs for more information. https://stripe.com/docs/keys
+BILLING_BACKEND=warehouse.subscriptions.services.MockStripeBillingService api_base=http://stripe:12111 api_version=2020-08-27
+# BILLING_BACKEND=warehouse.subscriptions.services.StripeBillingService api_version=2020-08-27 publishable_key=pk_test_123 secret_key=sk_test_123 webhook_key=whsec_123
+
 CAMO_URL={request.scheme}://{request.domain}:9000/
 CAMO_KEY=insecurecamokey
 
@@ -26,7 +33,7 @@ SIMPLE_BACKEND=warehouse.packaging.services.LocalSimpleStorage path=/var/opt/war
 DOCS_BACKEND=warehouse.packaging.services.LocalDocsStorage path=/var/opt/warehouse/docs/
 SPONSORLOGOS_BACKEND=warehouse.admin.services.LocalSponsorLogoStorage path=/var/opt/warehouse/sponsorlogos/
 
-MAIL_BACKEND=warehouse.email.services.ConsoleAndSMTPEmailSender host=maildev port=25 ssl=false sender=noreply@pypi.org
+MAIL_BACKEND=warehouse.email.services.ConsoleAndSMTPEmailSender host=maildev port=1025 ssl=false sender=noreply@pypi.org
 
 BREACHED_PASSWORDS=warehouse.accounts.NullPasswordBreachedService
 
@@ -49,3 +56,15 @@ GITHUB_TOKEN_SCANNING_META_API_URL="http://notgithub:8000/meta/public_keys/token
 TWOFACTORREQUIREMENT_ENABLED=true
 TWOFACTORMANDATE_AVAILABLE=true
 TWOFACTORMANDATE_ENABLED=true
+OIDC_ENABLED=true
+
+TUF_URL="http://{request.domain}:9001/metadata"
+TUF_KEY_BACKEND=warehouse.tuf.services.LocalKeyService key.path=/opt/warehouse/src/dev
+TUF_STORAGE_BACKEND=warehouse.tuf.services.LocalStorageService
+TUF_REPOSITORY_BACKEND=warehouse.tuf.services.RepositoryService repo.path=/var/opt/warehouse/tuf_metadata
+TUF_ROOT_SECRET="an insecure private key password"
+TUF_SNAPSHOT_SECRET="an insecure private key password"
+TUF_TARGETS_SECRET="an insecure private key password"
+TUF_TIMESTAMP_SECRET="an insecure private key password"
+TUF_BINS_SECRET="an insecure private key password"
+TUF_BIN_N_SECRET="an insecure private key password"

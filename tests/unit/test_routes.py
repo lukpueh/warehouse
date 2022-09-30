@@ -26,6 +26,7 @@ def test_routes(warehouse):
                 settings={
                     "docs.url": docs_route_url,
                     "files.url": "https://files.example.com/packages/{path}",
+                    "tuf.url": "https://files.example.com/metadata/{path}",
                 }
             )
             if warehouse:
@@ -134,11 +135,21 @@ def test_routes(warehouse):
             traverse="/{project_name}",
             domain=warehouse,
         ),
+        pretend.call(
+            "includes.administer-user-include",
+            "/_includes/administer-user-include/{user_name}",
+            factory="warehouse.accounts.models:UserFactory",
+            traverse="/{user_name}",
+            domain=warehouse,
+        ),
         pretend.call("classifiers", "/classifiers/", domain=warehouse),
         pretend.call("search", "/search/", domain=warehouse),
         pretend.call("stats", "/stats/", accept="text/html", domain=warehouse),
         pretend.call(
             "stats.json", "/stats/", accept="application/json", domain=warehouse
+        ),
+        pretend.call(
+            "security-key-giveaway", "/security-key-giveaway/", domain=warehouse
         ),
         pretend.call(
             "accounts.profile",
@@ -177,6 +188,11 @@ def test_routes(warehouse):
         ),
         pretend.call(
             "accounts.verify-email", "/account/verify-email/", domain=warehouse
+        ),
+        pretend.call(
+            "accounts.verify-organization-role",
+            "/account/verify-organization-role/",
+            domain=warehouse,
         ),
         pretend.call(
             "accounts.verify-project-role",
@@ -237,10 +253,125 @@ def test_routes(warehouse):
         pretend.call(
             "manage.account.token", "/manage/account/token/", domain=warehouse
         ),
+        pretend.call(
+            "manage.organizations", "/manage/organizations/", domain=warehouse
+        ),
+        pretend.call(
+            "manage.organization.settings",
+            "/manage/organization/{organization_name}/settings/",
+            factory="warehouse.organizations.models:OrganizationFactory",
+            traverse="/{organization_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.organization.activate_subscription",
+            "/manage/organization/{organization_name}/subscription/activate/",
+            factory="warehouse.organizations.models:OrganizationFactory",
+            traverse="/{organization_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.organization.subscription",
+            "/manage/organization/{organization_name}/subscription/",
+            factory="warehouse.organizations.models:OrganizationFactory",
+            traverse="/{organization_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.organization.projects",
+            "/manage/organization/{organization_name}/projects/",
+            factory="warehouse.organizations.models:OrganizationFactory",
+            traverse="/{organization_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.organization.teams",
+            "/manage/organization/{organization_name}/teams/",
+            factory="warehouse.organizations.models:OrganizationFactory",
+            traverse="/{organization_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.organization.roles",
+            "/manage/organization/{organization_name}/people/",
+            factory="warehouse.organizations.models:OrganizationFactory",
+            traverse="/{organization_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.organization.revoke_invite",
+            "/manage/organization/{organization_name}/people/revoke_invite/",
+            factory="warehouse.organizations.models:OrganizationFactory",
+            traverse="/{organization_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.organization.change_role",
+            "/manage/organization/{organization_name}/people/change/",
+            factory="warehouse.organizations.models:OrganizationFactory",
+            traverse="/{organization_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.organization.delete_role",
+            "/manage/organization/{organization_name}/people/delete/",
+            factory="warehouse.organizations.models:OrganizationFactory",
+            traverse="/{organization_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.team.settings",
+            "/manage/organization/{organization_name}/team/{team_name}/settings/",
+            factory="warehouse.organizations.models:TeamFactory",
+            traverse="/{organization_name}/{team_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.team.projects",
+            "/manage/organization/{organization_name}/team/{team_name}/projects/",
+            factory="warehouse.organizations.models:TeamFactory",
+            traverse="/{organization_name}/{team_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.team.roles",
+            "/manage/organization/{organization_name}/team/{team_name}/members/",
+            factory="warehouse.organizations.models:TeamFactory",
+            traverse="/{organization_name}/{team_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.team.delete_role",
+            "/manage/organization/{organization_name}/team/{team_name}/members/delete/",
+            factory="warehouse.organizations.models:TeamFactory",
+            traverse="/{organization_name}/{team_name}",
+            domain=warehouse,
+        ),
         pretend.call("manage.projects", "/manage/projects/", domain=warehouse),
         pretend.call(
             "manage.project.settings",
             "/manage/project/{project_name}/settings/",
+            factory="warehouse.packaging.models:ProjectFactory",
+            traverse="/{project_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.project.settings.publishing",
+            "/manage/project/{project_name}/settings/publishing/",
+            factory="warehouse.packaging.models:ProjectFactory",
+            traverse="/{project_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.project.remove_organization_project",
+            "/manage/project/{project_name}/remove_organization_project/",
+            factory="warehouse.packaging.models:ProjectFactory",
+            traverse="/{project_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.project.transfer_organization_project",
+            "/manage/project/{project_name}/transfer_organization_project/",
             factory="warehouse.packaging.models:ProjectFactory",
             traverse="/{project_name}",
             domain=warehouse,
@@ -302,6 +433,20 @@ def test_routes(warehouse):
             domain=warehouse,
         ),
         pretend.call(
+            "manage.project.change_team_project_role",
+            "/manage/project/{project_name}/collaboration/change_team/",
+            factory="warehouse.packaging.models:ProjectFactory",
+            traverse="/{project_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "manage.project.delete_team_project_role",
+            "/manage/project/{project_name}/collaboration/delete_team/",
+            factory="warehouse.packaging.models:ProjectFactory",
+            traverse="/{project_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
             "manage.project.documentation",
             "/manage/project/{project_name}/documentation/",
             factory="warehouse.packaging.models:ProjectFactory",
@@ -311,13 +456,6 @@ def test_routes(warehouse):
         pretend.call(
             "manage.project.history",
             "/manage/project/{project_name}/history/",
-            factory="warehouse.packaging.models:ProjectFactory",
-            traverse="/{project_name}",
-            domain=warehouse,
-        ),
-        pretend.call(
-            "manage.project.journal",
-            "/manage/project/{project_name}/journal/",
             factory="warehouse.packaging.models:ProjectFactory",
             traverse="/{project_name}",
             domain=warehouse,
@@ -337,6 +475,7 @@ def test_routes(warehouse):
             domain=warehouse,
         ),
         pretend.call("packaging.file", "https://files.example.com/packages/{path}"),
+        pretend.call("tuf.metadata", "https://files.example.com/metadata/{path}"),
         pretend.call("ses.hook", "/_/ses-hook/", domain=warehouse),
         pretend.call("rss.updates", "/rss/updates.xml", domain=warehouse),
         pretend.call("rss.packages", "/rss/packages.xml", domain=warehouse),
@@ -345,7 +484,6 @@ def test_routes(warehouse):
             "/rss/project/{name}/releases.xml",
             factory="warehouse.packaging.models:ProjectFactory",
             traverse="/{name}/",
-            read_only=True,
             domain=warehouse,
         ),
         pretend.call(
@@ -358,45 +496,59 @@ def test_routes(warehouse):
             "/_/vulnerabilities/osv/report",
             domain=warehouse,
         ),
-        pretend.call("legacy.api.simple.index", "/simple/", domain=warehouse),
+        pretend.call("api.billing.webhook", "/billing/webhook/", domain=warehouse),
+        pretend.call("api.simple.index", "/simple/", domain=warehouse),
         pretend.call(
-            "legacy.api.simple.detail",
+            "api.simple.detail",
             "/simple/{name}/",
             factory="warehouse.packaging.models:ProjectFactory",
             traverse="/{name}/",
-            read_only=True,
+            domain=warehouse,
+        ),
+        # Mock URLs
+        pretend.call(
+            "mock.billing.checkout-session",
+            "/mock/billing/{organization_name}/checkout/",
+            factory="warehouse.organizations.models:OrganizationFactory",
+            traverse="/{organization_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "mock.billing.portal-session",
+            "/mock/billing/{organization_name}/portal/",
+            factory="warehouse.organizations.models:OrganizationFactory",
+            traverse="/{organization_name}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "mock.billing.trigger-checkout-session-completed",
+            "/mock/billing/{organization_name}/checkout/completed/",
+            factory="warehouse.organizations.models:OrganizationFactory",
+            traverse="/{organization_name}",
             domain=warehouse,
         ),
         pretend.call(
             "legacy.api.json.project",
             "/pypi/{name}/json",
-            factory="warehouse.packaging.models:ProjectFactory",
-            traverse="/{name}",
-            read_only=True,
+            factory="warehouse.legacy.api.json.latest_release_factory",
             domain=warehouse,
         ),
         pretend.call(
             "legacy.api.json.project_slash",
             "/pypi/{name}/json/",
-            factory="warehouse.packaging.models:ProjectFactory",
-            traverse="/{name}",
-            read_only=True,
+            factory="warehouse.legacy.api.json.latest_release_factory",
             domain=warehouse,
         ),
         pretend.call(
             "legacy.api.json.release",
             "/pypi/{name}/{version}/json",
-            factory="warehouse.packaging.models:ProjectFactory",
-            traverse="/{name}/{version}",
-            read_only=True,
+            factory="warehouse.legacy.api.json.release_factory",
             domain=warehouse,
         ),
         pretend.call(
             "legacy.api.json.release_slash",
             "/pypi/{name}/{version}/json/",
-            factory="warehouse.packaging.models:ProjectFactory",
-            traverse="/{name}/{version}",
-            read_only=True,
+            factory="warehouse.legacy.api.json.release_factory",
             domain=warehouse,
         ),
         pretend.call("legacy.docs", docs_route_url),
@@ -425,10 +577,10 @@ def test_routes(warehouse):
             view_kw={"has_translations": True},
         ),
     ]
-
     assert config.add_redirect.calls == [
         pretend.call("/sponsor/", "/sponsors/", domain=warehouse),
         pretend.call("/u/{username}/", "/user/{username}/", domain=warehouse),
+        pretend.call("/2fa/", "/manage/account/two-factor/", domain=warehouse),
         pretend.call("/p/{name}/", "/project/{name}/", domain=warehouse),
         pretend.call("/pypi/{name}/", "/project/{name}/", domain=warehouse),
         pretend.call(
@@ -438,6 +590,11 @@ def test_routes(warehouse):
         pretend.call(
             "/packages/{path:.*}",
             "https://files.example.com/packages/{path}",
+            domain=warehouse,
+        ),
+        pretend.call(
+            "/metadata/{path:.*}",
+            "https://files.example.com/metadata/{path}",
             domain=warehouse,
         ),
     ]
@@ -466,16 +623,22 @@ def test_routes(warehouse):
 
     assert config.add_xmlrpc_endpoint.calls == [
         pretend.call(
-            "pypi", pattern="/pypi", header="Content-Type:text/xml", domain=warehouse
+            "xmlrpc.pypi",
+            pattern="/pypi",
+            header="Content-Type:text/xml",
+            domain=warehouse,
         ),
         pretend.call(
-            "pypi_slash",
+            "xmlrpc.pypi_slash",
             pattern="/pypi/",
             header="Content-Type:text/xml",
             domain=warehouse,
         ),
         pretend.call(
-            "RPC2", pattern="/RPC2", header="Content-Type:text/xml", domain=warehouse
+            "xmlrpc.RPC2",
+            pattern="/RPC2",
+            header="Content-Type:text/xml",
+            domain=warehouse,
         ),
     ]
 

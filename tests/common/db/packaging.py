@@ -25,7 +25,6 @@ from warehouse.packaging.models import (
     JournalEntry,
     ProhibitedProjectName,
     Project,
-    ProjectEvent,
     Release,
     Role,
     RoleInvitation,
@@ -44,13 +43,16 @@ class ProjectFactory(WarehouseFactory):
 
     id = factory.Faker("uuid4", cast_to=None)
     name = factory.Faker("pystr", max_chars=12)
+    normalized_name = factory.LazyAttribute(
+        lambda o: packaging.utils.canonicalize_name(o.name)
+    )
 
 
 class ProjectEventFactory(WarehouseFactory):
     class Meta:
-        model = ProjectEvent
+        model = Project.Event
 
-    project = factory.SubFactory(ProjectFactory)
+    source = factory.SubFactory(ProjectFactory)
 
 
 class DescriptionFactory(WarehouseFactory):

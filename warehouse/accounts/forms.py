@@ -19,7 +19,6 @@ import disposable_email_domains
 import markupsafe
 import wtforms
 import wtforms.fields
-import wtforms.fields.html5
 
 import warehouse.utils.webauthn as webauthn
 
@@ -37,6 +36,9 @@ from warehouse.email import (
 )
 from warehouse.i18n import localize as _
 from warehouse.utils.otp import TOTP_LENGTH
+
+# Taken from passlib
+MAX_PASSWORD_SIZE = 4096
 
 
 class UsernameMixin:
@@ -104,7 +106,10 @@ class NewUsernameMixin:
     )
 
     def validate_username(self, field):
-        if self.user_service.find_userid(field.data) is not None:
+        if (
+            self.user_service.username_is_prohibited(field.data)
+            or self.user_service.find_userid(field.data) is not None
+        ):
             raise wtforms.validators.ValidationError(
                 _(
                     "This username is already being used by another "
@@ -115,7 +120,15 @@ class NewUsernameMixin:
 
 class PasswordMixin:
 
-    password = wtforms.PasswordField(validators=[wtforms.validators.DataRequired()])
+    password = wtforms.PasswordField(
+        validators=[
+            wtforms.validators.DataRequired(),
+            wtforms.validators.Length(
+                max=MAX_PASSWORD_SIZE,
+                message=_("Password too long."),
+            ),
+        ]
+    )
 
     def __init__(
         self, *args, request, action="login", check_password_metrics_tags=None, **kwargs
@@ -156,19 +169,27 @@ class NewPasswordMixin:
     new_password = wtforms.PasswordField(
         validators=[
             wtforms.validators.DataRequired(),
+            wtforms.validators.Length(
+                max=MAX_PASSWORD_SIZE,
+                message=_("Password too long."),
+            ),
             forms.PasswordStrengthValidator(
                 user_input_fields=["full_name", "username", "email"]
             ),
-        ]
+        ],
     )
 
     password_confirm = wtforms.PasswordField(
         validators=[
             wtforms.validators.DataRequired(),
+            wtforms.validators.Length(
+                max=MAX_PASSWORD_SIZE,
+                message=_("Password too long."),
+            ),
             wtforms.validators.EqualTo(
                 "new_password", message=_("Your passwords don't match. Try again.")
             ),
-        ]
+        ],
     )
 
     # These fields are here to provide the various user-defined fields to the
@@ -193,7 +214,7 @@ class NewPasswordMixin:
 
 class NewEmailMixin:
 
-    email = wtforms.fields.html5.EmailField(
+    email = wtforms.fields.EmailField(
         validators=[
             wtforms.validators.DataRequired(),
             wtforms.validators.Regexp(
@@ -434,3 +455,26 @@ class RequestPasswordResetForm(forms.Form):
 class ResetPasswordForm(NewPasswordMixin, forms.Form):
 
     pass
+
+
+class TitanPromoCodeForm(forms.Form):
+    country = wtforms.SelectField(
+        "Select destination country",
+        choices=[
+            ("", "Select destination country"),
+            ("Austria", "Austria"),
+            ("Belgium", "Belgium"),
+            ("Canada", "Canada"),
+            ("France", "France"),
+            ("Germany", "Germany"),
+            ("Italy", "Italy"),
+            ("Japan", "Japan"),
+            ("Spain", "Spain"),
+            ("Switzerland", "Switzerland"),
+            ("United Kingdom", "United Kingdom"),
+            ("United States", "United States"),
+        ],
+        validators=[
+            wtforms.validators.DataRequired(message="Select destination country")
+        ],
+    )

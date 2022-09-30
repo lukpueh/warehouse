@@ -2,7 +2,7 @@
 # our static assets with. It is important that the steps in this remain the
 # same as the steps in Dockerfile.static, EXCEPT this may include additional
 # steps appended onto the end.
-FROM node:14.15.5 as static
+FROM node:14.19.1-bullseye as static
 
 WORKDIR /opt/warehouse/src/
 
@@ -44,7 +44,7 @@ RUN gulp dist
 
 # Now we're going to build our actual application, but not the actual production
 # image that it gets deployed into.
-FROM python:3.9.10-slim-buster as build
+FROM python:3.10.4-slim-buster as build
 
 # Define whether we're building a production or a development image. This will
 # generally be used to control whether or not we install our development and
@@ -104,6 +104,7 @@ RUN set -x \
                     -r /tmp/requirements/deploy.txt \
                     -r /tmp/requirements/main.txt \
                     $(if [ "$DEVEL" = "yes" ]; then echo '-r /tmp/requirements/tests.txt -r /tmp/requirements/lint.txt -r /tmp/requirements/docs.txt'; fi) \
+    && pip check \
     && find /opt/warehouse -name '*.pyc' -delete
 
 
@@ -112,7 +113,7 @@ RUN set -x \
 
 # Now we're going to build our actual application image, which will eventually
 # pull in the static files that were built above.
-FROM python:3.9.10-slim-buster
+FROM python:3.10.4-slim-buster
 
 # Setup some basic environment variables that are ~never going to change.
 ENV PYTHONUNBUFFERED 1

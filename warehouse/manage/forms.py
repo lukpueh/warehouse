@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import json
+import re
 
 import wtforms
 
@@ -26,6 +27,13 @@ from warehouse.accounts.forms import (
     WebAuthnCredentialMixin,
 )
 from warehouse.i18n import localize as _
+from warehouse.organizations.models import (
+    OrganizationRoleType,
+    OrganizationType,
+    TeamProjectRoleType,
+)
+
+# /manage/account/ forms
 
 
 class RoleNameMixin:
@@ -33,6 +41,16 @@ class RoleNameMixin:
     role_name = wtforms.SelectField(
         "Select role",
         choices=[("", "Select role"), ("Maintainer", "Maintainer"), ("Owner", "Owner")],
+        validators=[wtforms.validators.DataRequired(message="Select role")],
+    )
+
+
+class TeamProjectRoleNameMixin:
+
+    team_project_role_name = wtforms.SelectField(
+        "Select permissions",
+        choices=[("", "Select role"), ("Maintainer", "Maintainer"), ("Owner", "Owner")],
+        coerce=lambda string: TeamProjectRoleType(string) if string else None,
         validators=[wtforms.validators.DataRequired(message="Select role")],
     )
 
@@ -58,7 +76,56 @@ class CreateRoleForm(RoleNameMixin, UsernameMixin, forms.Form):
         self.user_service = user_service
 
 
+class CreateInternalRoleForm(
+    RoleNameMixin,
+    TeamProjectRoleNameMixin,
+    UsernameMixin,
+    forms.Form,
+):
+    is_team = wtforms.RadioField(
+        "Team or member?",
+        choices=[("true", "Team"), ("false", "Member")],
+        coerce=lambda string: True if string == "true" else False,
+        default="true",
+        validators=[wtforms.validators.InputRequired()],
+    )
+
+    team_name = wtforms.SelectField(
+        "Select team",
+        choices=[("", "Select team")],
+        default="",  # Set default to avoid error when there are no team choices.
+        validators=[wtforms.validators.InputRequired()],
+    )
+
+    def __init__(self, *args, team_choices, user_service, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.team_name.choices += [(name, name) for name in sorted(team_choices)]
+        self.user_service = user_service
+
+        # Do not check for required fields in browser.
+        self.team_name.flags.required = False
+        self.team_project_role_name.flags.required = False
+        self.username.flags.required = False
+        self.role_name.flags.required = False
+
+        # Conditionally check for required fields on server.
+        if self.is_team.data:
+            self.username.validators = []
+            self.role_name.validators = []
+        else:
+            self.team_name.validators = []
+            self.team_project_role_name.validators = []
+
+    def validate_username(self, field):
+        if not self.is_team.data:
+            super().validate_username(field)
+
+
 class ChangeRoleForm(RoleNameMixin, forms.Form):
+    pass
+
+
+class ChangeTeamProjectRoleForm(TeamProjectRoleNameMixin, forms.Form):
     pass
 
 
@@ -303,3 +370,305 @@ class Toggle2FARequirementForm(forms.Form):
     __params__ = ["two_factor_requirement_sentinel"]
 
     two_factor_requirement_sentinel = wtforms.HiddenField()
+
+
+# /manage/organizations/ forms
+
+
+class OrganizationRoleNameMixin:
+
+    role_name = wtforms.SelectField(
+        "Select role",
+        choices=[
+            ("", "Select role"),
+            ("Member", "Member"),
+            ("Manager", "Manager"),
+            ("Owner", "Owner"),
+            ("Billing Manager", "Billing Manager"),
+        ],
+        coerce=lambda string: OrganizationRoleType(string) if string else None,
+        validators=[wtforms.validators.DataRequired(message="Select role")],
+    )
+
+
+class OrganizationNameMixin:
+
+    name = wtforms.StringField(
+        validators=[
+            wtforms.validators.DataRequired(
+                message="Specify organization account name"
+            ),
+            wtforms.validators.Length(
+                max=50,
+                message=_(
+                    "Choose an organization account name with 50 characters or less."
+                ),
+            ),
+            # the regexp below must match the CheckConstraint
+            # for the name field in organizations.models.Organization
+            wtforms.validators.Regexp(
+                r"^[a-zA-Z0-9][a-zA-Z0-9._-]*[a-zA-Z0-9]$",
+                message=_(
+                    "The organization account name is invalid. "
+                    "Organization account names "
+                    "must be composed of letters, numbers, "
+                    "dots, hyphens and underscores. And must "
+                    "also start and finish with a letter or number. "
+                    "Choose a different organization account name."
+                ),
+            ),
+        ]
+    )
+
+    def validate_name(self, field):
+        # Find organization by name.
+        organization_id = self.organization_service.find_organizationid(field.data)
+
+        # Name is valid if one of the following is true:
+        # - There is no name conflict with any organization.
+        # - The name conflict is with the current organization.
+        if organization_id is not None and organization_id != self.organization_id:
+            raise wtforms.validators.ValidationError(
+                _(
+                    "This organization account name has already been used. "
+                    "Choose a different organization account name."
+                )
+            )
+
+
+class AddOrganizationProjectForm(forms.Form):
+
+    __params__ = ["add_existing_project", "existing_project_name", "new_project_name"]
+
+    add_existing_project = wtforms.RadioField(
+        "Add existing or new project?",
+        choices=[("true", "Existing project"), ("false", "New project")],
+        coerce=lambda string: True if string == "true" else False,
+        default="true",
+        validators=[wtforms.validators.InputRequired()],
+    )
+
+    existing_project_name = wtforms.SelectField(
+        "Select project",
+        choices=[("", "Select project")],
+        default="",  # Set default to avoid error when there are no project choices.
+    )
+
+    new_project_name = wtforms.StringField()
+
+    _project_name_re = re.compile(
+        r"^([A-Z0-9]|[A-Z0-9][A-Z0-9._-]*[A-Z0-9])$", re.IGNORECASE
+    )
+
+    def __init__(self, *args, project_choices, project_factory, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.existing_project_name.choices += [
+            (name, name) for name in sorted(project_choices)
+        ]
+        self.project_factory = project_factory
+
+    def validate_existing_project_name(self, field):
+        if self.add_existing_project.data:
+            if not field.data:
+                raise wtforms.validators.StopValidation(_("Select project"))
+
+    def validate_new_project_name(self, field):
+        if not self.add_existing_project.data:
+            if not field.data:
+                raise wtforms.validators.StopValidation(_("Specify project name"))
+            if not self._project_name_re.match(field.data):
+                raise wtforms.validators.ValidationError(
+                    _(
+                        "Start and end with a letter or numeral containing "
+                        "only ASCII numeric and '.', '_' and '-'."
+                    )
+                )
+            if field.data in self.project_factory:
+                raise wtforms.validators.ValidationError(
+                    _(
+                        "This project name has already been used. "
+                        "Choose a different project name."
+                    )
+                )
+
+
+class TransferOrganizationProjectForm(forms.Form):
+
+    __params__ = ["organization"]
+
+    organization = wtforms.SelectField(
+        "Select organization",
+        choices=[("", "Select organization")],
+        validators=[
+            wtforms.validators.DataRequired(message="Select organization"),
+        ],
+    )
+
+    def __init__(self, *args, organization_choices, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization.choices += [
+            (name, name) for name in sorted(organization_choices)
+        ]
+
+
+class CreateOrganizationRoleForm(OrganizationRoleNameMixin, UsernameMixin, forms.Form):
+    def __init__(self, *args, orgtype, organization_service, user_service, **kwargs):
+        super().__init__(*args, **kwargs)
+        if orgtype != OrganizationType.Company:
+            # Remove "Billing Manager" choice if organization is not a "Company"
+            self.role_name.choices = [
+                choice
+                for choice in self.role_name.choices
+                if "Billing Manager" not in choice
+            ]
+        self.organization_service = organization_service
+        self.user_service = user_service
+
+
+class ChangeOrganizationRoleForm(OrganizationRoleNameMixin, forms.Form):
+    def __init__(self, *args, orgtype, **kwargs):
+        super().__init__(*args, **kwargs)
+        if orgtype != OrganizationType.Company:
+            # Remove "Billing Manager" choice if organization is not a "Company"
+            self.role_name.choices = [
+                choice
+                for choice in self.role_name.choices
+                if "Billing Manager" not in choice
+            ]
+
+
+class SaveOrganizationNameForm(OrganizationNameMixin, forms.Form):
+
+    __params__ = ["name"]
+
+    def __init__(self, *args, organization_service, organization_id=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization_service = organization_service
+        self.organization_id = organization_id
+
+
+class SaveOrganizationForm(forms.Form):
+
+    __params__ = ["display_name", "link_url", "description", "orgtype"]
+
+    display_name = wtforms.StringField(
+        validators=[
+            wtforms.validators.DataRequired(message="Specify your organization name"),
+            wtforms.validators.Length(
+                max=100,
+                message=_(
+                    "The organization name is too long. "
+                    "Choose a organization name with 100 characters or less."
+                ),
+            ),
+        ]
+    )
+    link_url = wtforms.URLField(
+        validators=[
+            wtforms.validators.DataRequired(message="Specify your organization URL"),
+            wtforms.validators.Length(
+                max=400,
+                message=_(
+                    "The organization URL is too long. "
+                    "Choose a organization URL with 400 characters or less."
+                ),
+            ),
+        ]
+    )
+    description = wtforms.TextAreaField(
+        validators=[
+            wtforms.validators.DataRequired(
+                message="Specify your organization description"
+            ),
+            wtforms.validators.Length(
+                max=400,
+                message=_(
+                    "The organization description is too long. "
+                    "Choose a organization description with 400 characters or less."
+                ),
+            ),
+        ]
+    )
+    orgtype = wtforms.SelectField(
+        # TODO: Map additional choices to "Company" and "Community".
+        choices=[("Company", "Company"), ("Community", "Community")],
+        coerce=OrganizationType,
+        validators=[
+            wtforms.validators.DataRequired(message="Select organization type"),
+        ],
+    )
+
+
+class CreateOrganizationForm(SaveOrganizationNameForm, SaveOrganizationForm):
+
+    __params__ = SaveOrganizationNameForm.__params__ + SaveOrganizationForm.__params__
+
+
+class CreateTeamRoleForm(UsernameMixin, forms.Form):
+    def __init__(self, *args, user_choices, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user_choices = user_choices
+
+    def validate_username(self, field):
+        if field.data not in self.user_choices:
+            raise wtforms.validators.ValidationError(
+                _(
+                    "No organization owner, manager, or member found "
+                    "with that username. Please try again."
+                )
+            )
+
+
+class SaveTeamForm(forms.Form):
+
+    __params__ = ["name"]
+
+    name = wtforms.StringField(
+        validators=[
+            wtforms.validators.DataRequired(message="Specify team name"),
+            wtforms.validators.Length(
+                max=50,
+                message=_("Choose a team name with 50 characters or less."),
+            ),
+            # the regexp below must match the CheckConstraint
+            # for the name field in organizations.models.Team
+            wtforms.validators.Regexp(
+                r"^([^\s/._-]|[^\s/._-].*[^\s/._-])$",
+                message=_(
+                    "The team name is invalid. Team names cannot start "
+                    "or end with a space, period, underscore, hyphen, "
+                    "or slash. Choose a different team name."
+                ),
+            ),
+        ]
+    )
+
+    def __init__(
+        self, *args, organization_service, organization_id, team_id=None, **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.team_id = team_id
+        self.organization_id = organization_id
+        self.organization_service = organization_service
+
+    def validate_name(self, field):
+        # Find team by name.
+        team_id = self.organization_service.find_teamid(
+            self.organization_id, field.data
+        )
+
+        # Name is valid if one of the following is true:
+        # - There is no name conflict with any team.
+        # - The name conflict is with the current team.
+        if team_id is not None and team_id != self.team_id:
+            raise wtforms.validators.ValidationError(
+                _(
+                    "This team name has already been used. "
+                    "Choose a different team name."
+                )
+            )
+
+
+class CreateTeamForm(SaveTeamForm):
+
+    __params__ = SaveTeamForm.__params__

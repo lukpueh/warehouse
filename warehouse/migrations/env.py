@@ -50,10 +50,14 @@ def run_migrations_online():
         connectable = create_engine(url, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
+        connection.execute("SET statement_timeout = 5000")
+        connection.execute("SET lock_timeout = 4000")
+
         context.configure(
             connection=connection,
             target_metadata=db.metadata,
             compare_server_default=True,
+            transaction_per_migration=True,
         )
         with context.begin_transaction():
             context.run_migrations()

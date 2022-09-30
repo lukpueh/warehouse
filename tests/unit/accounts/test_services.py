@@ -17,6 +17,7 @@ import uuid
 import freezegun
 import pretend
 import pytest
+import pytz
 import requests
 
 from webauthn.helpers import bytes_to_base64url
@@ -41,7 +42,7 @@ from warehouse.accounts.interfaces import (
     TooManyEmailsAdded,
     TooManyFailedLogins,
 )
-from warehouse.accounts.models import DisableReason
+from warehouse.accounts.models import DisableReason, ProhibitedUserName
 from warehouse.metrics import IMetricsService, NullMetrics
 from warehouse.rate_limiting.interfaces import IRateLimiter
 
@@ -131,6 +132,20 @@ class TestDatabaseUserService:
 
         assert limiter.test.calls == []
         assert limiter.resets_in.calls == []
+
+    def test_username_is_not_prohibited(self, user_service):
+        assert user_service.username_is_prohibited("my_username") is False
+
+    def test_username_is_prohibited(self, user_service):
+        user = UserFactory.create()
+        user_service.db.add(
+            ProhibitedUserName(
+                name="my_username",
+                comment="blah",
+                prohibited_by=user,
+            )
+        )
+        assert user_service.username_is_prohibited("my_username") is True
 
     def test_find_userid_nonexistent_user(self, user_service):
         assert user_service.find_userid("my_username") is None
@@ -407,6 +422,14 @@ class TestDatabaseUserService:
 
         assert found_user is None
 
+    def test_get_admins(self, user_service):
+        admin = UserFactory.create(is_superuser=True)
+        user = UserFactory.create(is_superuser=False)
+        admins = user_service.get_admins()
+
+        assert admin in admins
+        assert user not in admins
+
     def test_disable_password(self, user_service):
         user = UserFactory.create()
 
@@ -428,6 +451,10 @@ class TestDatabaseUserService:
         if disabled:
             user_service.disable_password(user.id, reason=reason)
         assert user_service.is_disabled(user.id) == (disabled, reason)
+
+    def test_is_disabled_user_frozen(self, user_service):
+        user = UserFactory.create(is_frozen=True)
+        assert user_service.is_disabled(user.id) == (True, DisableReason.AccountFrozen)
 
     def test_updating_password_undisables(self, user_service):
         user = UserFactory.create()
@@ -667,6 +694,8 @@ class TestDatabaseUserService:
             credential_type=PublicKeyCredentialType.PUBLIC_KEY,
             user_verified=False,
             attestation_object=b"foobar",
+            credential_device_type="single_device",
+            credential_backed_up=False,
         )
         verify_registration_response = pretend.call_recorder(
             lambda *a, **kw: fake_validated_credential
@@ -893,6 +922,20 @@ class TestDatabaseUserService:
         assert len(new_codes) == 8
         assert [c.id for c in initial_codes] != [c.id for c in new_codes]
 
+    def test_get_password_timestamp(self, user_service):
+        create_time = datetime.datetime.utcnow()
+        with freezegun.freeze_time(create_time):
+            user = UserFactory.create()
+            user.password_date = create_time
+
+        assert user_service.get_password_timestamp(user.id) == create_time.timestamp()
+
+    def test_get_password_timestamp_no_value(self, user_service):
+        user = UserFactory.create()
+        user.password_date = None
+
+        assert user_service.get_password_timestamp(user.id) == 0
+
 
 class TestTokenService:
     def test_verify_service(self):
@@ -919,7 +962,7 @@ class TestTokenService:
         assert token_service.loads(token) == {"foo": "bar"}
 
     def test_loads_return_timestamp(self, token_service):
-        sign_time = datetime.datetime.utcnow()
+        sign_time = pytz.UTC.localize(datetime.datetime.utcnow())
         with freezegun.freeze_time(sign_time):
             token = token_service.dumps({"foo": "bar"})
 

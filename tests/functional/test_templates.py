@@ -32,13 +32,14 @@ FILTERS = {
     "format_package_type": "warehouse.filters:format_package_type",
     "parse_version": "warehouse.filters:parse_version",
     "localize_datetime": "warehouse.filters:localize_datetime",
+    "canonicalize_name": "packaging.utils:canonicalize_name",
 }
 
 
 def test_templates_for_empty_titles():
     """
     Test if all HTML templates have defined the title block. See
-    https://github.com/pypa/warehouse/issues/784
+    https://github.com/pypi/warehouse/issues/784
     """
     dir_name = os.path.join(os.path.dirname(warehouse.__file__), "templates")
 
@@ -56,6 +57,7 @@ def test_templates_for_empty_titles():
     for dir_, _, files in os.walk(dir_name):
         if (
             dir_.find("/includes") > -1
+            or dir_.find("/api") > -1
             or dir_.find("/legacy") > -1
             or dir_.find("/email/") > -1
         ):
@@ -74,7 +76,7 @@ def test_templates_for_empty_titles():
 def test_render_templates():
     """
     Test if all HTML templates are rendered without Jinja exceptions.
-    see https://github.com/pypa/warehouse/issues/6634
+    see https://github.com/pypi/warehouse/issues/6634
     """
     dir_name = os.path.join(os.path.dirname(warehouse.__file__), "templates")
 

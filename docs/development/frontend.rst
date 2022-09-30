@@ -26,16 +26,15 @@ Tests
 -----
 
 The JavaScript codebase includes tests that can be ran via
-``make static_tests`` which is also ran with the ``make tests`` target.
-Both targets will run the tests in the Docker environment but they
-may also be ran locally using ``npm run test`` once NodeJS and the
-dependencies are installed as described above.
+``make static_tests``. This target will run the static tests in the Docker
+environment but they may also be ran locally using ``npm run test`` once NodeJS
+and the dependencies are installed as described above.
 
 JavaScript tests use the `Jest testing framework <https://jestjs.io/>`_
 along with `jest-dom <https://github.com/testing-library/jest-dom>`_
 for assertion helpers. We can invoke Jest directly specify a particular
 test suite via ``node_modules/.bin/jest tests/frontend/<TEST_FILE>.js`` or
-add any of the `Jest CLI options <https://jestjs.io/docs/en/cli>`_ .
+add any of the `Jest CLI options <https://jestjs.io/docs/cli>`_ .
 All tests are located in the ``tests/frontend``.
 
 `Stimulus <https://stimulusjs.org/>`_ controller tests leverage on Jest
@@ -78,7 +77,7 @@ of some pages, but the "new" version of others.
 Browser Support
 ---------------
 
-We aim to support all major browsers, including IE11. We also support one-back,
+We aim to support all major browsers. We also support one-back,
 and follow the ``defaults`` recommendation from ``browserslist``.
 
 You can see the full list of supported browsers by running ``npx browserslist``
@@ -99,7 +98,7 @@ Exceptions to these rules include:
 
 We also allow both dashes and underscores in our class names, as we
 follow the `Nicholas Gallagher variation
-<http://nicolasgallagher.com/about-html-semantics-front-end-architecture/>`_
+<https://nicolasgallagher.com/about-html-semantics-front-end-architecture/>`_
 of the `BEM naming methodology <https://en.bem.info/>`_.
 
 More information on how BEM works can be found in `this article from

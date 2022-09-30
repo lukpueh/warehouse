@@ -49,6 +49,7 @@ from warehouse.packaging.models import (
     Role,
 )
 from warehouse.packaging.tasks import update_bigquery_release_files
+from warehouse.utils.security_policy import AuthenticationMethod
 
 from ...common.db.accounts import EmailFactory, UserFactory
 from ...common.db.classifiers import ClassifierFactory
@@ -225,7 +226,11 @@ class TestValidation:
 
     @pytest.mark.parametrize(
         "project_url",
-        ["Home, https://pypi.python.org/", ("A" * 32) + ", https://example.com/"],
+        [
+            "Home, https://pypi.python.org/",
+            "Home,https://pypi.python.org/",
+            ("A" * 32) + ", https://example.com/",
+        ],
     )
     def test_validate_project_url_valid(self, project_url):
         legacy._validate_project_url(project_url)
@@ -233,7 +238,6 @@ class TestValidation:
     @pytest.mark.parametrize(
         "project_url",
         [
-            "Home,https://pypi.python.org/",
             "https://pypi.python.org/",
             ", https://pypi.python.org/",
             "Home, ",
@@ -2605,6 +2609,50 @@ class TestFileUpload:
             "See /the/help/url/ for more information."
         ).format(user2.username, project.name)
 
+    def test_upload_succeeds_with_2fa_enabled(
+        self, pyramid_config, db_request, metrics, monkeypatch
+    ):
+        pyramid_config.testing_securitypolicy(userid=1)
+
+        user = UserFactory.create(totp_secret=b"secret")
+        EmailFactory.create(user=user)
+        project = ProjectFactory.create()
+        RoleFactory.create(user=user, project=project)
+
+        db_request.user = user
+        db_request.user_agent = "warehouse-tests/6.6.6"
+        db_request.POST = MultiDict(
+            {
+                "metadata_version": "1.2",
+                "name": project.name,
+                "version": "1.0.0",
+                "summary": "This is my summary!",
+                "filetype": "sdist",
+                "md5_digest": _TAR_GZ_PKG_MD5,
+                "content": pretend.stub(
+                    filename="{}-{}.tar.gz".format(project.name, "1.0.0"),
+                    file=io.BytesIO(_TAR_GZ_PKG_TESTDATA),
+                    type="application/tar",
+                ),
+            }
+        )
+        db_request.authentication_method = AuthenticationMethod.BASIC_AUTH
+
+        send_email = pretend.call_recorder(lambda *a, **kw: None)
+        monkeypatch.setattr(legacy, "send_basic_auth_with_two_factor_email", send_email)
+
+        storage_service = pretend.stub(store=lambda path, filepath, meta: None)
+        db_request.find_service = lambda svc, name=None, context=None: {
+            IFileStorage: storage_service,
+            IMetricsService: metrics,
+        }.get(svc)
+
+        legacy.file_upload(db_request)
+
+        assert send_email.calls == [
+            pretend.call(db_request, user, project_name=project.name)
+        ]
+
     @pytest.mark.parametrize(
         "plat",
         [
@@ -3044,7 +3092,7 @@ class TestFileUpload:
             "Programming Language :: Python",
         ]
         assert set(release.requires_dist) == {"foo", "bar (>1.0)"}
-        assert set(release.project_urls) == {"Test, https://example.com/"}
+        assert release.project_urls == {"Test": "https://example.com/"}
         assert set(release.requires_external) == {"Cheese (>1.0)"}
         assert set(release.provides) == {"testing"}
         assert release.version == expected_version
@@ -3085,77 +3133,6 @@ class TestFileUpload:
                 db_request.remote_addr,
             ),
         ]
-
-    def test_upload_succeeds_creates_classifier(
-        self, pyramid_config, db_request, metrics, monkeypatch
-    ):
-        pyramid_config.testing_securitypolicy(userid=1)
-
-        user = UserFactory.create()
-        EmailFactory.create(user=user)
-        project = ProjectFactory.create()
-        RoleFactory.create(user=user, project=project)
-
-        monkeypatch.setattr(legacy, "classifiers", {"AA :: BB", "CC :: DD"})
-
-        db_request.db.add(Classifier(classifier="AA :: BB"))
-
-        filename = "{}-{}.tar.gz".format(project.name, "1.0")
-
-        db_request.user = user
-        db_request.user_agent = "warehouse-tests/6.6.6"
-        db_request.POST = MultiDict(
-            {
-                "metadata_version": "1.2",
-                "name": project.name,
-                "version": "1.0",
-                "summary": "This is my summary!",
-                "filetype": "sdist",
-                "md5_digest": _TAR_GZ_PKG_MD5,
-                "content": pretend.stub(
-                    filename=filename,
-                    file=io.BytesIO(_TAR_GZ_PKG_TESTDATA),
-                    type="application/tar",
-                ),
-            }
-        )
-        db_request.POST.extend(
-            [
-                ("classifiers", "AA :: BB"),
-                ("classifiers", "CC :: DD"),
-                ("requires_dist", "foo"),
-                ("requires_dist", "bar (>1.0)"),
-                ("project_urls", "Test, https://example.com/"),
-                ("requires_external", "Cheese (>1.0)"),
-                ("provides", "testing"),
-            ]
-        )
-
-        storage_service = pretend.stub(store=lambda path, filepath, meta: None)
-        db_request.find_service = lambda svc, name=None, context=None: {
-            IFileStorage: storage_service,
-            IMetricsService: metrics,
-        }.get(svc)
-
-        resp = legacy.file_upload(db_request)
-
-        assert resp.status_code == 200
-
-        # Ensure that a new Classifier has been created
-        classifier = (
-            db_request.db.query(Classifier)
-            .filter(Classifier.classifier == "CC :: DD")
-            .one()
-        )
-        assert classifier.classifier == "CC :: DD"
-
-        # Ensure that the Release has the new classifier
-        release = (
-            db_request.db.query(Release)
-            .filter((Release.project == project) & (Release.version == "1.0"))
-            .one()
-        )
-        assert release.classifiers == ["AA :: BB", "CC :: DD"]
 
     def test_all_valid_classifiers_can_be_created(self, db_request):
         for classifier in classifiers:
