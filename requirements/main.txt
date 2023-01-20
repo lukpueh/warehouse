@@ -1073,6 +1073,21 @@ sentry-sdk==1.5.5 \
     --hash=sha256:3817274fba2498c8ebf6b896ee98ac916c5598706340573268c07bf2bb30d831 \
     --hash=sha256:98fd155fa5d5fec1dbabed32a1a4ae2705f1edaa5dae4e7f7b62a384ba30e759
     # via -r requirements/main.in
+setuptools==60.9.3 \
+    --hash=sha256:2347b2b432c891a863acadca2da9ac101eae6169b1d3dfee2ec605ecd50dbfe5 \
+    --hash=sha256:e4f30b9f84e5ab3decf945113119649fec09c1fc3507c6ebffec75646c56e62b
+    # via
+    #   -r requirements/main.in
+    #   celery
+    #   google-api-core
+    #   limits
+    #   pastedeploy
+    #   plaster
+    #   pyramid
+    #   repoze-sendmail
+    #   zope-deprecation
+    #   zope-interface
+    #   zope-sqlalchemy
 six==1.16.0 \
     --hash=sha256:1e61c37477a1626458e36f7b1d82aa5c9b094fa4802892072e49de9c60c4c926 \
     --hash=sha256:8abb2f1d86890a2dfb989f9a77cfcfd3e47c2a354b01111771326f8aa26e0254
@@ -1169,9 +1184,9 @@ translationstring==1.4 \
     --hash=sha256:5f4dc4d939573db851c8d840551e1a0fb27b946afe3b95aafc22577eed2d6262 \
     --hash=sha256:bf947538d76e69ba12ab17283b10355a9ecfbc078e6123443f43f2107f6376f3
     # via pyramid
-trove-classifiers==2022.2.16 \
-    --hash=sha256:d985eeadb24c8a40d1fa121317466e2ae73ae8ad9abc8cab69371212c40b085f \
-    --hash=sha256:dcf20b1de0f56308dd107caaa5175e72a950bbb12c95deedac6a7cd429ecd694
+trove-classifiers==2023.1.20 \
+    --hash=sha256:e4fb91e744a1b8a4e416226dbd4c3a58717295f54608e412cee526287d5d14d0 \
+    --hash=sha256:ed3fd4e1d2ea77ca9ed379380582566e6003a54d70a3e5521a9b2a7896609362
     # via -r requirements/main.in
 typeguard==2.13.3 \
     --hash=sha256:00edaa8da3a133674796cf5ea87d9f4b4c367d77476e185e80251cc13dfbb8c4 \
@@ -1371,20 +1386,3 @@ zope-sqlalchemy==1.6 \
 zxcvbn==4.4.28 \
     --hash=sha256:151bd816817e645e9064c354b13544f85137ea3320ca3be1fb6873ea75ef7dc1
     # via -r requirements/main.in
-
-# The following packages are considered to be unsafe in a requirements file:
-setuptools==60.9.3 \
-    --hash=sha256:2347b2b432c891a863acadca2da9ac101eae6169b1d3dfee2ec605ecd50dbfe5 \
-    --hash=sha256:e4f30b9f84e5ab3decf945113119649fec09c1fc3507c6ebffec75646c56e62b
-    # via
-    #   -r requirements/main.in
-    #   celery
-    #   google-api-core
-    #   limits
-    #   pastedeploy
-    #   plaster
-    #   pyramid
-    #   repoze-sendmail
-    #   zope-deprecation
-    #   zope-interface
-    #   zope-sqlalchemy
