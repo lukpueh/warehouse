@@ -72,13 +72,13 @@ bleach==4.1.0 \
     --hash=sha256:0900d8b37eba61a802ee40ac0061f8c2b5dee29c1927dd1d233e075ebf5a71da \
     --hash=sha256:4d2651ab93271d1129ac9cbc679f524565cc8a1b791909c4a51eac4446a15994
     # via readme-renderer
-boto3==1.21.2 \
-    --hash=sha256:50de4ae3dc9cbc3065b184247580160540273b25e7eaf72cdc18b979294a1b54 \
-    --hash=sha256:e46133e44d5600e3de6739c60af2cc47d23742234df149aab3ccff4f1edec64d
+boto3==1.26.60 \
+    --hash=sha256:5fd2810217a74a38078a19fb85a9e5d6934d0c146eb060967a3ffd7ab33cdf00 \
+    --hash=sha256:f0824b3bcf803800d3ecef903b4840427e4b3d37a069f6fc9a86310f7e036ad5
     # via -r requirements/main.in
-botocore==1.24.2 \
-    --hash=sha256:c017dd174285a07db4e1b844750c43550c1f51e8256e722f1e69030c4f6c78f1 \
-    --hash=sha256:d1547d0bd8428df2dc1ad95b227e271914bb01f8edbd16a45766465c2090bc9b
+botocore==1.29.60 \
+    --hash=sha256:a21217ccf4613c9ebbe4c3192e13ba91d46be642560e39a16406662a398a107b \
+    --hash=sha256:c4ae251e7df0cf01d893eb945bc8f23c14989ed349775a8e16c949f08a068f9a
     # via
     #   boto3
     #   s3transfer
@@ -1065,14 +1065,29 @@ rsa==4.8 \
     --hash=sha256:5c6bd9dc7a543b7fe4304a631f8a8a3b674e2bbfc49c2ae96200cdbe55df6b17 \
     --hash=sha256:95c5d300c4e879ee69708c428ba566c59478fd653cc3a22243eeb8ed846950bb
     # via google-auth
-s3transfer==0.5.1 \
-    --hash=sha256:25c140f5c66aa79e1ac60be50dcd45ddc59e83895f062a3aab263b870102911f \
-    --hash=sha256:69d264d3e760e569b78aaa0f22c97e955891cd22e32b10c51f784eeda4d9d10a
+s3transfer==0.6.0 \
+    --hash=sha256:06176b74f3a15f61f1b4f25a1fc29a4429040b7647133a463da8fa5bd28d5ecd \
+    --hash=sha256:2ed07d3866f523cc561bf4a00fc5535827981b117dd7876f036b0c1aca42c947
     # via boto3
 sentry-sdk==1.5.5 \
     --hash=sha256:3817274fba2498c8ebf6b896ee98ac916c5598706340573268c07bf2bb30d831 \
     --hash=sha256:98fd155fa5d5fec1dbabed32a1a4ae2705f1edaa5dae4e7f7b62a384ba30e759
     # via -r requirements/main.in
+setuptools==60.9.3 \
+    --hash=sha256:2347b2b432c891a863acadca2da9ac101eae6169b1d3dfee2ec605ecd50dbfe5 \
+    --hash=sha256:e4f30b9f84e5ab3decf945113119649fec09c1fc3507c6ebffec75646c56e62b
+    # via
+    #   -r requirements/main.in
+    #   celery
+    #   google-api-core
+    #   limits
+    #   pastedeploy
+    #   plaster
+    #   pyramid
+    #   repoze-sendmail
+    #   zope-deprecation
+    #   zope-interface
+    #   zope-sqlalchemy
 six==1.16.0 \
     --hash=sha256:1e61c37477a1626458e36f7b1d82aa5c9b094fa4802892072e49de9c60c4c926 \
     --hash=sha256:8abb2f1d86890a2dfb989f9a77cfcfd3e47c2a354b01111771326f8aa26e0254
@@ -1371,20 +1386,3 @@ zope-sqlalchemy==1.6 \
 zxcvbn==4.4.28 \
     --hash=sha256:151bd816817e645e9064c354b13544f85137ea3320ca3be1fb6873ea75ef7dc1
     # via -r requirements/main.in
-
-# The following packages are considered to be unsafe in a requirements file:
-setuptools==60.9.3 \
-    --hash=sha256:2347b2b432c891a863acadca2da9ac101eae6169b1d3dfee2ec605ecd50dbfe5 \
-    --hash=sha256:e4f30b9f84e5ab3decf945113119649fec09c1fc3507c6ebffec75646c56e62b
-    # via
-    #   -r requirements/main.in
-    #   celery
-    #   google-api-core
-    #   limits
-    #   pastedeploy
-    #   plaster
-    #   pyramid
-    #   repoze-sendmail
-    #   zope-deprecation
-    #   zope-interface
-    #   zope-sqlalchemy
