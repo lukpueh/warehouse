@@ -74,6 +74,13 @@ class GenericLocalBlobStorage:
     def get_checksum(self, path):
         return hashlib.md5(open(os.path.join(self.base, path), "rb").read()).hexdigest()
 
+    def get_blake2bsum(self, path):
+        content_hasher = hashlib.blake2b(digest_size=256 // 8)
+        content_hasher.update(open(os.path.join(self.base, path), "rb").read())
+        content_hash = content_hasher.hexdigest().lower()
+
+        return content_hash
+
     def store(self, path, file_path, *, meta=None):
         destination = os.path.join(self.base, path)
         os.makedirs(os.path.dirname(destination), exist_ok=True)
@@ -304,6 +311,20 @@ class GenericGCSBlobStorage(GenericBlobStorage):
 
     def get_checksum(self, path):
         raise NotImplementedError
+
+    @google.api_core.retry.Retry(
+        predicate=google.api_core.retry.if_exception_type(
+            google.api_core.exceptions.ServiceUnavailable
+        )
+    )
+    def get_blake2bsum(self, path):
+        path = self._get_path(path)
+        blob = self.bucket.blob(path)
+        content_hasher = hashlib.blake2b(digest_size=256 // 8)
+        content_hasher.update(blob.download_as_string())
+        content_hash = content_hasher.hexdigest().lower()
+
+        return content_hash
 
     @google.api_core.retry.Retry(
         predicate=google.api_core.retry.if_exception_type(

@@ -122,6 +122,7 @@ from warehouse.packaging.models import (
     RoleInvitationStatus,
 )
 from warehouse.rate_limiting import IRateLimiter
+from warehouse.tuf import targets
 from warehouse.utils.http import is_safe_url
 from warehouse.utils.paginate import paginate_url_factory
 from warehouse.utils.project import confirm_project, destroy_docs, remove_project
@@ -1835,16 +1836,23 @@ class ManageProjectRelease:
             )
         )
 
+        # Delete the project release (simple detail and files) from TUF Metadata
+        tasks = targets.delete_release(self.request, self.release)
+
         self.release.project.record_event(
             tag=EventTag.Project.ReleaseRemove,
             request=self.request,
             additional={
                 "submitted_by": self.request.user.username,
                 "canonical_version": self.release.canonical_version,
+                "tuf": ", ".join([task["data"]["task_id"] for task in tasks]),
             },
         )
 
         self.request.db.delete(self.release)
+
+        # Generate new project simple detal and add to TUF Metadata
+        targets.add(self.request, self.release.project)
 
         self.request.session.flash(
             self.request._(f"Deleted release {self.release.version!r}"), queue="success"
@@ -1927,6 +1935,9 @@ class ManageProjectRelease:
             )
         )
 
+        # Delete the file and project simple detail from TUF metadata
+        task = targets.delete_file(self.request, self.release.project, release_file)
+
         release_file.record_event(
             tag=EventTag.File.FileRemove,
             request=self.request,
@@ -1935,6 +1946,7 @@ class ManageProjectRelease:
                 "canonical_version": self.release.canonical_version,
                 "filename": release_file.filename,
                 "project_id": str(self.release.project.id),
+                "tuf": task["data"]["task_id"],
             },
         )
 
@@ -1958,6 +1970,9 @@ class ManageProjectRelease:
             )
 
         self.request.db.delete(release_file)
+
+        # Generate new project simple detal and add to TUF Metadata
+        targets.add(self.request, self.release.project)
 
         self.request.session.flash(
             f"Deleted file {release_file.filename!r}", queue="success"
