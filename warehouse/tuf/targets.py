@@ -21,61 +21,63 @@ targets_url = lambda request: request.registry.settings["tuf.api.targets.url"]
 publish_url = lambda request: request.registry.settings["tuf.api.publish.url"]
 
 
-def _target_post(path, size, blake2_256_digest):
+def _payload(targets):
+    """Helper to create payload for POST or DELETE targets request."""
+    return {
+        "targets": targets,
+        "publish_targets": True,
+    }
+
+
+def _payload_part(path, size, digest):
+    """Helper to create payload part for POST targets request."""
     return {
         "path": path,
         "info": {
             "length": size,
-            "hashes": {"blake2b-256": blake2_256_digest},
+            "hashes": {"blake2b-256": digest},
         },
     }
 
 
-def _post_targets(request, targets, publish=True):
-    payload = {
-        "targets": targets,
-        "publish_targets": publish,
-    }
+def _handle(response):
+    """Helper to handle http response for POST or DELETE targets request."""
+    if response.status_code != 202:
+        raise HTTPBadGateway(f"Unexpected TUF Server response: {response.text}")
 
-    rstuf_response = requests.post(targets_url(request), json=payload)
-    if rstuf_response.status_code != 202:
-        raise HTTPBadGateway(f"Unexpected TUF Server response: {rstuf_response.text}")
-
-    return rstuf_response.json()
+    return response.json()
 
 
-def _delete_targets(request, targets, publish=True):
-    payload = {
-        "targets": targets,
-        "publish_targets": publish,
-    }
+def add_file(request, project, file=None):
+    """Call RSTUF to add file and new project simple index to TUF targets metadata.
 
-    rstuf_response = requests.delete(targets_url(request), json=payload)
-    if rstuf_response.status_code != 202:
-        raise HTTPBadGateway(f"Unexpected TUF Server response: {rstuf_response.text}")
-
-    return rstuf_response.json()
-
-
-def add(request, project, file=None):
-    simple_index = render_simple_detail(project, request, store=True)
+    NOTE: If called without file, only adds new project simple index. This
+    can be used to re-add project simple index, after deleting a file.
+    """
     targets = []
-    targets.append(_target_post(simple_index[1], simple_index[2], simple_index[0]))
+    digest, path, size = render_simple_detail(project, request, store=True)
+    simple_index_part = _payload_part(path, size, digest)
+    targets.append(simple_index_part)
     if file:
-        targets.append(_target_post(file.path, file.size, file.blake2_256_digest))
+        file_part = _payload_part(file.path, file.size, file.blake2_256_digest)
+        targets.append(file_part)
 
-    task = _post_targets(request, targets)
+    response = requests.post(targets_url(request), json=_payload(targets))
 
-    return task
+    return _handle(response)
 
 
 def delete_file(request, project, file):
-    # Delete the file and the current simple index from TUF Metadata
-    current_simple_index = current_simple_details_path(request, project)
-    targets_to_delete = [file.path, current_simple_index]
-    task = _delete_targets(request, targets_to_delete)
+    """Call RSTUF to remove file and project simple index from TUF targets metadata.
 
-    return task
+    NOTE: Simple index needs to be added separately.
+    """
+    index_path = current_simple_details_path(request, project)
+    targets = [file.path, index_path]
+
+    response = requests.delete(targets_url(request), json=_payload(targets))
+
+    return _handle(response)
 
 
 def delete_release(request, release):
