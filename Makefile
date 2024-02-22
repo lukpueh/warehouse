@@ -110,6 +110,9 @@ initdb: .state/docker-build-base
 	docker compose run --rm web python -m warehouse classifiers sync
 	$(MAKE) reindex
 
+inittuf: .state/docker-build-base
+	docker compose run --rm web rstuf admin ceremony -b -u -f dev/rstuf/bootstrap.json --api-server http://rstuf-api
+
 runmigrations: .state/docker-build-base
 	docker compose run --rm web python -m warehouse db upgrade head
 

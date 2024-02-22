@@ -249,6 +249,40 @@ or that the ``static`` container has finished compiling the static assets:
 
 or maybe something else.
 
+Running the TUF Initialization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This will use a `RSTUF ceremony payload and bootstrap the TUF Repository
+<https://repository-service-tuf.readthedocs.io/en/latest/guide/deployment/setup.html#ceremony-and-bootstrap>`_,
+
+.. note::
+
+    Run this command after ``make intidb`` and ``make serve`` have finished.
+
+.. code-block:: console
+
+    make inittuf
+
+``make inittuf`` will produce output for a while, and will exit.
+
+.. code-block:: console
+
+    Starting online bootstrap
+    Bootstrap status: ACCEPTED (a5c08c354f10450184cb6e6677869ec8)
+    Bootstrap status:  PENDING
+    Bootstrap status:  STARTED
+    ...Bootstrap status:  SUCCESS
+    Bootstrap completed using `dev/rstuf/bootstrap.json`. 🔐 🎉
+
+Accessing the TUF Metadata is available at http://localhost:9001/tuf-metadata/
+
+The RSTUF API is available at http://localhost:8001 as a playground to interact.
+
+.. note::
+
+    The RSTUF API is exposed only for development purposes and will not be
+    available in production.
+
 
 Viewing Warehouse in a browser
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
