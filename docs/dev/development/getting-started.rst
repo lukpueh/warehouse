@@ -249,46 +249,51 @@ or that the ``static`` container has finished compiling the static assets:
 
 or maybe something else.
 
-Running the TUF Initialization
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Bootstrapping the TUF Metadata Repository
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This will use a `RSTUF ceremony payload and bootstrap the TUF Repository
-<https://repository-service-tuf.readthedocs.io/en/latest/guide/deployment/setup.html#ceremony-and-bootstrap>`_,
+To enable PyPI Index Signing (`PEP 458 <https://peps.python.org/pep-0458/>`_),
+you have to first bootstrap the TUF metadata repository.
 
-.. note::
-
-    Run this command after ``make intidb`` and ``make serve`` have finished.
+Wait until `make serve` has finished, then run:
 
 .. code-block:: console
 
     make inittuf
 
-``make inittuf`` will produce output for a while, and will exit.
+You should see the following line at the bottom of the output:
 
 .. code-block:: console
 
-    Starting online bootstrap
-    Bootstrap status: ACCEPTED (a5c08c354f10450184cb6e6677869ec8)
-    Bootstrap status:  PENDING
-    Bootstrap status:  STARTED
-    ...Bootstrap status:  SUCCESS
     Bootstrap completed using `dev/rstuf/bootstrap.json`. 🔐 🎉
 
-Accessing the TUF Metadata is available at http://localhost:9001/tuf-metadata/
 
-The RSTUF API is available at http://localhost:8001 as a playground to interact.
+This command sends a static *bootstrap payload* to the RSTUF API. The payload
+includes the TUF trust root for development and other configuration.
+
+By calling this API, RSTUF creates the TUF metadata repository, installs the
+TUF trust root for development, and creates the initial set of TUF metadata.
 
 .. note::
 
     The RSTUF API is exposed only for development purposes and will not be
-    available in production.
+    available in production. Currently, no upload hooks or automatic metadata
+    update tasks are configured to interact with RSTUF.
+
+    Take a look at the `RSTUF API documentation
+    <https://repository-service-tuf.readthedocs.io/en/stable/guide/general/usage.html#adding-artifacts>`_
+    to see how you can simulate artifact upload or removal, and how they affect
+    the TUF metadata repository:
+
+    * RSTUF API: http://localhost:8001
+    * TUF Metadata Repository: http://localhost:9001/tuf-metadata/
 
 
 Viewing Warehouse in a browser
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 At this point all the services are up, and web container is listening on port
-80. It's accessible at http://localhost:80/.
+1.  It's accessible at http://localhost:80/.
 
 .. note::
 
