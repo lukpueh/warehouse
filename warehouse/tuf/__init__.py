@@ -16,9 +16,15 @@ RSTUF API client library
 
 import time
 
+from http import HTTPStatus
 from typing import Any
 
 import requests
+
+from pyramid.request import Request
+
+from warehouse.packaging.models import Project
+from warehouse.packaging.utils import render_simple_detail
 
 
 class RSTUFError(Exception):
@@ -29,6 +35,15 @@ def get_task_state(server: str, task_id: str) -> str:
     resp = requests.get(f"{server}/api/v1/task?task_id={task_id}")
     resp.raise_for_status()
     return resp.json()["data"]["state"]
+
+
+def is_bootstrapped(server: str) -> bool:
+    """Call RSTUF bootstrap API to check, if RSTUF is ready to be used."""
+    response = requests.get(f"{server}/api/v1/bootstrap")
+    if response.status_code != HTTPStatus.OK:
+        return False
+
+    return response.json()["data"]["bootstrap"]
 
 
 def post_bootstrap(server: str, payload: Any) -> str:
@@ -42,6 +57,27 @@ def post_bootstrap(server: str, payload: Any) -> str:
         raise RSTUFError(f"Error in RSTUF job: {resp_json}")
 
     return resp_data["task_id"]
+
+
+def post_targets(server: str, path: str, size: int, digest: str) -> str:
+    """Call RSTUF targets API to update relevant metadata for new target file.
+
+    Returns task id of async task, which does the metadata update.
+    """
+    targets = {
+        "targets": [
+            {
+                "path": path,
+                "info": {
+                    "length": size,
+                    "hashes": {"blake2b-256": digest},
+                },
+            }
+        ]
+    }
+    resp = requests.post(f"{server}/api/v1/artifacts", json=targets)
+    resp.raise_for_status()
+    return resp.json()["data"]["task_id"]
 
 
 def wait_for_success(server: str, task_id: str):
@@ -72,3 +108,32 @@ def wait_for_success(server: str, task_id: str):
 
     else:
         raise RSTUFError("RSTUF job failed, please check payload and retry")
+
+
+# TODO: Make sure to **always** run this, if a project simple detail changes
+# TODO: Revise vanilla async task handling (see `_rstuf_wait_for_success`)
+# TODO: Handle RSTUF/network errors (see `_rstuf_*` helpers)
+def update_metadata(request: Request, project: Project):
+    """Update TUF metadata to capture project changes (PEP 458).
+
+    NOTE: PEP 458 says, TUF targets metadata must include path, hash and size of
+    distributions files and simple detail files. In reality, simple detail files
+    are enough, as they already include all relevant distribution file infos.
+    """
+    if not request.registry.settings["tuf.enabled"]:
+        return
+
+    server = request.registry.settings["tuf.rstuf_api_url"]
+
+    if not is_bootstrapped(server):
+        return
+
+    # Ignore returned simple detail path with the content hash as infix.
+    # In TUF metadata the project name alone is listed as target path,
+    # so that there is only one entry per project. The hash is listed
+    # separately, so that the client can still build the hash infixed path.
+    digest, _, size = render_simple_detail(project, request, store=True)
+    path = project.normalized_name
+
+    task_id = post_targets(server, path, size, digest)
+    wait_for_success(server, task_id)
