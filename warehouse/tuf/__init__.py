@@ -59,22 +59,11 @@ def post_bootstrap(server: str, payload: Any) -> str:
     return resp_data["task_id"]
 
 
-def post_targets(server: str, path: str, size: int, digest: str) -> str:
-    """Call RSTUF targets API to update relevant metadata for new target file.
+def post_targets(server: str, targets: dict[str, Any]) -> str:
+    """Call RSTUF targets API to update relevant metadata for new targets.
 
     Returns task id of async task, which does the metadata update.
     """
-    targets = {
-        "targets": [
-            {
-                "path": path,
-                "info": {
-                    "length": size,
-                    "hashes": {"blake2b-256": digest},
-                },
-            }
-        ]
-    }
     resp = requests.post(f"{server}/api/v1/artifacts", json=targets)
     resp.raise_for_status()
     return resp.json()["data"]["task_id"]
@@ -133,7 +122,16 @@ def update_metadata(request: Request, project: Project):
     # so that there is only one entry per project. The hash is listed
     # separately, so that the client can still build the hash infixed path.
     digest, _, size = render_simple_detail(project, request, store=True)
-    path = project.normalized_name
-
-    task_id = post_targets(server, path, size, digest)
+    targets = {
+        "targets": [
+            {
+                "path": project.normalized_name,
+                "info": {
+                    "length": size,
+                    "hashes": {"blake2b-256": digest},
+                },
+            }
+        ]
+    }
+    task_id = post_targets(server, targets)
     wait_for_success(server, task_id)
