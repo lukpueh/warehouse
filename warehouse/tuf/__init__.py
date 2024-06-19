@@ -32,6 +32,10 @@ class RSTUFError(Exception):
     pass
 
 
+class RSTUFNoBootstrapError(Exception):
+    pass
+
+
 def get_task_state(server: str, task_id: str) -> str:
     resp = requests.get(f"{server}/api/v1/task?task_id={task_id}")
     resp.raise_for_status()
@@ -58,7 +62,15 @@ def post_targets(server: str, targets: dict[str, Any]) -> str:
     """
     resp = requests.post(f"{server}/api/v1/artifacts", json=targets)
     resp.raise_for_status()
-    return resp.json()["data"]["task_id"]
+
+    # 200 but no "data" means that RSTUF isn't bootstrapped yet
+    # TODO: Ask upstream to not return 200 on error
+    resp_json = resp.json()
+    resp_data = resp_json.get("data")
+    if not resp_data:
+        raise RSTUFNoBootstrapError(resp_json)
+
+    return resp_data["task_id"]
 
 
 def wait_for_success(server: str, task_id: str):
@@ -91,8 +103,6 @@ def wait_for_success(server: str, task_id: str):
         raise RSTUFError("RSTUF job failed, please check payload and retry")
 
 
-# TODO: Make sure to **always** run this, if a project simple detail changes
-# TODO: Handle RSTUF/network errors (see `_rstuf_*` helpers)
 @tasks.task(ignore_result=True, acks_late=True)
 def update_metadata(request: Request, project_id: UUID):
     """Update TUF metadata to capture project changes (PEP 458).
@@ -123,5 +133,7 @@ def update_metadata(request: Request, project_id: UUID):
             }
         ]
     }
+
+    # TODO: Handle errors: pass, retry or notify
     task_id = post_targets(server, targets)
     wait_for_success(server, task_id)
