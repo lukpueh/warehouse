@@ -99,10 +99,9 @@ def update_metadata(request: Request, project: Project):
     distributions files and simple detail files. In reality, simple detail files
     are enough, as they already include all relevant distribution file infos.
     """
-    if not request.registry.settings["tuf.enabled"]:
-        return
-
     server = request.registry.settings["tuf.rstuf_api_url"]
+    if not server:
+        return
 
     # Ignore returned simple detail path with the content hash as infix.
     # In TUF metadata the project name alone is listed as target path,
