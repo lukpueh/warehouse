@@ -16,7 +16,6 @@ RSTUF API client library
 
 import time
 
-from http import HTTPStatus
 from typing import Any
 
 import requests
@@ -35,15 +34,6 @@ def get_task_state(server: str, task_id: str) -> str:
     resp = requests.get(f"{server}/api/v1/task?task_id={task_id}")
     resp.raise_for_status()
     return resp.json()["data"]["state"]
-
-
-def is_bootstrapped(server: str) -> bool:
-    """Call RSTUF bootstrap API to check, if RSTUF is ready to be used."""
-    response = requests.get(f"{server}/api/v1/bootstrap")
-    if response.status_code != HTTPStatus.OK:
-        return False
-
-    return response.json()["data"]["bootstrap"]
 
 
 def post_bootstrap(server: str, payload: Any) -> str:
@@ -113,9 +103,6 @@ def update_metadata(request: Request, project: Project):
         return
 
     server = request.registry.settings["tuf.rstuf_api_url"]
-
-    if not is_bootstrapped(server):
-        return
 
     # Ignore returned simple detail path with the content hash as infix.
     # In TUF metadata the project name alone is listed as target path,
