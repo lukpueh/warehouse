@@ -17,11 +17,13 @@ RSTUF API client library
 import time
 
 from typing import Any
+from uuid import UUID
 
 import requests
 
 from pyramid.request import Request
 
+from warehouse import tasks
 from warehouse.packaging.models import Project
 from warehouse.packaging.utils import render_simple_detail
 
@@ -90,9 +92,9 @@ def wait_for_success(server: str, task_id: str):
 
 
 # TODO: Make sure to **always** run this, if a project simple detail changes
-# TODO: Revise vanilla async task handling (see `_rstuf_wait_for_success`)
 # TODO: Handle RSTUF/network errors (see `_rstuf_*` helpers)
-def update_metadata(request: Request, project: Project):
+@tasks.task(ignore_result=True, acks_late=True)
+def update_metadata(request: Request, project_id: UUID):
     """Update TUF metadata to capture project changes (PEP 458).
 
     NOTE: PEP 458 says, TUF targets metadata must include path, hash and size of
@@ -102,6 +104,8 @@ def update_metadata(request: Request, project: Project):
     server = request.registry.settings["tuf.rstuf_api_url"]
     if not server:
         return
+
+    project = request.db.query(Project).filter(Project.id == project_id).one()
 
     # Ignore returned simple detail path with the content hash as infix.
     # In TUF metadata the project name alone is listed as target path,
