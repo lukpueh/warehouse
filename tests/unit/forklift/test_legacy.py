@@ -1120,7 +1120,7 @@ class TestFileUpload:
             pretend.call(sync_file_to_cache),
         ]
         assert delay.calls == [
-            pretend.call(release.project),
+            pretend.call(release.project.id),
             pretend.call(
                 {
                     "metadata_version": "1.2",
