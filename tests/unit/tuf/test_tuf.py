@@ -129,13 +129,13 @@ class TestTUF:
         one = call_recorder(lambda: project)
         db_request.db.query = lambda a: stub(filter=lambda a: stub(one=one))
 
-        # Test early return
+        # Test early return, if no RSTUF API URL configured
         db_request.registry.settings = {"tuf.rstuf_api_url": None}
         tuf.update_metadata(db_request, project_id)
 
         assert not one.calls
 
-        # Test regular return
+        # Test regular run
         rstuf_url = "url"
         index_digest = "digest"
         index_size = 42

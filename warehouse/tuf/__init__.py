@@ -58,7 +58,7 @@ def post_bootstrap(server: str, payload: Any) -> str:
 def post_targets(server: str, targets: dict[str, Any]) -> str:
     """Call RSTUF targets API to update relevant metadata for new targets.
 
-    Returns task id of async task, which does the metadata update.
+    Returns task id of the async task, which updates the TUF metadata.
     """
     resp = requests.post(f"{server}/api/v1/artifacts", json=targets)
     resp.raise_for_status()
@@ -117,10 +117,9 @@ def update_metadata(request: Request, project_id: UUID):
 
     project = request.db.query(Project).filter(Project.id == project_id).one()
 
-    # Ignore returned simple detail path with the content hash as infix.
-    # In TUF metadata the project name alone is listed as target path,
-    # so that there is only one entry per project. The hash is listed
-    # separately, so that the client can still build the hash infixed path.
+    # NOTE: We ignore the returned simple detail path with the content hash as
+    # infix. In TUF metadata the project name and hash are listed separately, so
+    # that there is only one entry per target file, even if the content changes.
     digest, _, size = render_simple_detail(project, request, store=True)
     targets = {
         "targets": [
